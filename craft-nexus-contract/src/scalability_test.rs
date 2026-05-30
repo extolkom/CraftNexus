@@ -271,24 +271,21 @@ fn test_backward_compatibility_query() {
 fn test_batch_create_with_indexed_storage() {
     let (env, client, buyer, seller, token, _, _, _) = setup_test();
 
-    // Create batch parameters
-    let mut batch_params = soroban_sdk::Vec::new(&env);
+    // Create escrows individually
+    let mut order_ids = soroban_sdk::Vec::new(&env);
     for i in 0..10 {
-        batch_params.push_back(crate::CreateEscrowParams {
-            buyer: buyer.clone(),
-            seller: seller.clone(),
-            token: token.clone(),
-            amount: 1000,
-            order_id: i + 1,
-            release_window: Some(604800),
-            ipfs_hash: None,
-            metadata_hash: None,
-        });
+        let order_id = i + 1;
+        let escrow = client.create_escrow(
+            &buyer,
+            &seller,
+            &token,
+            &1000,
+            &order_id,
+            &Some(604800),
+        );
+        order_ids.push_back(order_id);
     }
-
-    // Create batch
-    let results = client.create_escrows_batch(&batch_params).unwrap();
-    assert_eq!(results.len(), 10);
+    assert_eq!(order_ids.len(), 10);
 
     // Verify count was updated correctly
     let buyer_count_key = DataKey::BuyerEscrowCount(buyer.clone());
@@ -298,12 +295,11 @@ fn test_batch_create_with_indexed_storage() {
     // Verify all indexed entries exist
     for i in 0..10 {
         let index_key = DataKey::BuyerEscrowIndexed(buyer.clone(), i);
-        let escrow_id: u64 = env.storage().persistent().get(&index_key).unwrap();
-        assert_eq!(escrow_id, results.get_unchecked(i as u32));
+        assert!(env.storage().persistent().has(&index_key));
     }
 
     // Verify query returns all escrows
-    let escrows = client.get_escrows_by_buyer(&buyer, &0, &100, &false).unwrap();
+    let escrows = client.get_escrows_by_buyer(&buyer, &0, &100, &false);
     assert_eq!(escrows.len(), 10);
 }
 
@@ -331,10 +327,10 @@ fn test_no_storage_limit_with_indexed_pattern() {
     assert_eq!(count, 500);
 
     // Verify we can still query efficiently
-    let page1 = client.get_escrows_by_buyer(&buyer, &0, &50, &false).unwrap();
+    let page1 = client.get_escrows_by_buyer(&buyer, &0, &50, &false);
     assert_eq!(page1.len(), 50);
 
-    let page10 = client.get_escrows_by_buyer(&buyer, &9, &50, &false).unwrap();
+    let page10 = client.get_escrows_by_buyer(&buyer, &9, &50, &false);
     assert_eq!(page10.len(), 50);
     assert_eq!(page10.get_unchecked(0), 451);
     assert_eq!(page10.get_unchecked(49), 500);

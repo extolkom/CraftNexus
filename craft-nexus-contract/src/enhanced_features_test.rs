@@ -10,7 +10,7 @@ use soroban_sdk::{
 fn setup_enhanced_test(
     env: &Env,
 ) -> (
-    EscrowContractClient<'static>,
+    CraftNexusContractClient<'static>,
     OnboardingContractClient<'static>,
     Address,
     Address,
@@ -26,8 +26,8 @@ fn setup_enhanced_test(
     let onboarding_client = OnboardingContractClient::new(env, &onboarding_id);
 
     // Register Escrow Contract
-    let escrow_id = env.register_contract(None, EscrowContract);
-    let escrow_client = EscrowContractClient::new(env, &escrow_id);
+    let escrow_id = env.register_contract(None, CraftNexusContract);
+    let escrow_client = CraftNexusContractClient::new(env, &escrow_id);
 
     let admin = Address::generate(env);
     let platform_wallet = Address::generate(env);

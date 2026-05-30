@@ -20,8 +20,8 @@ fn test_release_funds_cei_pattern() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     // Initialize contract
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
@@ -84,8 +84,8 @@ fn test_refund_cei_pattern() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
 
@@ -136,8 +136,8 @@ fn test_resolve_dispute_cei_pattern() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &arbitrator, &500, &onboarding_contract);
     client.add_arbitrator(&arbitrator);
@@ -191,8 +191,8 @@ fn test_resolve_expired_dispute_cei_pattern() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
 
@@ -250,8 +250,8 @@ fn test_accept_partial_refund_cei_pattern() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
 
@@ -307,8 +307,8 @@ fn test_cancel_recurring_escrow_cei_pattern() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
 
@@ -353,8 +353,8 @@ fn test_auto_release_cei_pattern() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
 
@@ -409,8 +409,8 @@ fn test_state_consistency_during_concurrent_operations() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
 
@@ -500,8 +500,8 @@ fn test_active_obligations_updated_before_transfers() {
     let token = env.register_stellar_asset_contract_v2(token_admin.clone());
     let token_client = token::StellarAssetClient::new(&env, &token.address());
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &onboarding_contract);
 

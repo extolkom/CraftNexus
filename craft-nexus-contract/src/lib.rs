@@ -559,6 +559,29 @@ pub struct MetadataRevealProof {
     pub secret: Option<Bytes>,
 }
 
+/// Test-only metadata structure for simplified testing
+#[cfg(test)]
+#[derive(Clone, Eq, PartialEq)]
+pub struct Metadata {
+    pub title: String,
+    pub description: String,
+    pub category: String,
+}
+
+/// Test-only structure for batch escrow creation parameters
+#[cfg(test)]
+#[derive(Clone, Eq, PartialEq)]
+pub struct CreateEscrowParams {
+    pub buyer: Address,
+    pub seller: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub order_id: u32,
+    pub release_window: Option<u32>,
+    pub ipfs_hash: Option<String>,
+    pub metadata_hash: Option<Bytes>,
+}
+
 /// Proposal record for a pending WASM upgrade.
 ///
 /// `upgrade_at` is the earliest ledger timestamp at which `execute_upgrade` may
@@ -731,6 +754,28 @@ pub struct CraftNexusContract;
 
 /// Alias for backward compatibility
 pub type EscrowContract = CraftNexusContract;
+
+/// Guard to ensure reentry protection is cleared even if a panic or error occurs.
+/// This is essential to prevent contract locks from persisting across failed calls.
+/// Automatically removes the guard when dropped, ensuring cleanup in all control flows.
+#[allow(dead_code)]
+struct ReentryGuardScope<'a> {
+    env: &'a Env,
+}
+
+#[allow(dead_code)]
+impl<'a> ReentryGuardScope<'a> {
+    fn new(env: &'a Env) -> Self {
+        CraftNexusContract::enter_reentry_guard(env);
+        ReentryGuardScope { env }
+    }
+}
+
+impl<'a> Drop for ReentryGuardScope<'a> {
+    fn drop(&mut self) {
+        CraftNexusContract::exit_reentry_guard(self.env);
+    }
+}
 
 #[contractimpl]
 impl CraftNexusContract {
@@ -1037,6 +1082,59 @@ impl CraftNexusContract {
 
     fn exit_reentry_guard(env: &Env) {
         env.storage().temporary().remove(&DataKey::ReentryGuard);
+    }
+
+    /// Atomically updates both AllEscrowIds and EscrowCount to maintain consistency.
+    /// This function ensures that the count and ID list never diverge, which is critical
+    /// for off-chain enumeration and audit consistency (Issue #226).
+    fn update_escrow_indices_atomic(env: &Env, order_id: u32) {
+        // Update the global escrow ID list
+        let ids_key = DataKey::AllEscrowIds;
+        let mut all_ids: soroban_sdk::Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or(soroban_sdk::Vec::new(&env));
+        all_ids.push_back(order_id);
+        env.storage().persistent().set(&ids_key, &all_ids);
+        Self::extend_persistent(&env, &ids_key);
+
+        // Update the escrow count in lockstep with the ID list
+        let count_key = DataKey::EscrowCount;
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32);
+        env.storage().persistent().set(&count_key, &(count + 1));
+        Self::extend_persistent(&env, &count_key);
+    }
+
+    /// Atomically updates both AllEscrowIds and EscrowCount for batch operations.
+    /// Ensures all order IDs are added before count is incremented, preventing races.
+    fn update_escrow_indices_batch_atomic(env: &Env, order_ids: &soroban_sdk::Vec<u32>) {
+        if order_ids.is_empty() {
+            return;
+        }
+
+        // Batch update: add all IDs first
+        let ids_key = DataKey::AllEscrowIds;
+        let mut all_ids: soroban_sdk::Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or(soroban_sdk::Vec::new(&env));
+        for i in 0..order_ids.len() {
+            if let Some(id) = order_ids.get(i) {
+                all_ids.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&ids_key, &all_ids);
+        Self::extend_persistent(&env, &ids_key);
+
+        // Then increment count by the number of IDs added
+        let count_key = DataKey::EscrowCount;
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32);
+        env.storage()
+            .persistent()
+            .set(&count_key, &(count + order_ids.len() as u32));
+        Self::extend_persistent(&env, &count_key);
     }
 
     // IMPORTANT: this validation is intentionally scoped to escrow creation-time
@@ -1882,21 +1980,9 @@ impl CraftNexusContract {
         Self::update_active_obligations(&env, &buyer, 1);
         Self::update_active_obligations(&env, &seller, 1);
 
-        // Update global escrow index for off-chain enumeration
-        let ids_key = DataKey::AllEscrowIds;
-        let mut all_ids: soroban_sdk::Vec<u32> = env
-            .storage()
-            .persistent()
-            .get(&ids_key)
-            .unwrap_or(soroban_sdk::Vec::new(&env));
-        all_ids.push_back(order_id);
-        env.storage().persistent().set(&ids_key, &all_ids);
-        Self::extend_persistent(&env, &ids_key);
-
-        let count_key = DataKey::EscrowCount;
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32);
-        env.storage().persistent().set(&count_key, &(count + 1));
-        Self::extend_persistent(&env, &count_key);
+        // Update global escrow index for off-chain enumeration using atomic function
+        // This ensures AllEscrowIds and EscrowCount always remain in sync (Issue #226)
+        Self::update_escrow_indices_atomic(&env, order_id);
 
         // Update buyer's escrow list using indexed storage (scalable approach)
         let buyer_count_key = DataKey::BuyerEscrowCount(buyer.clone());
@@ -4011,28 +4097,17 @@ impl CraftNexusContract {
             i += 1;
         }
 
-        // Consolidate global index updates for the entire batch
+        // Consolidate global index updates for the entire batch using atomic function
+        // This ensures AllEscrowIds and EscrowCount always remain in sync (Issue #226)
         if !results.is_empty() {
-            let ids_key = DataKey::AllEscrowIds;
-            let mut all_ids: soroban_sdk::Vec<u32> = env
-                .storage()
-                .persistent()
-                .get(&ids_key)
-                .unwrap_or(soroban_sdk::Vec::new(&env));
+            // Convert results to u32 order IDs
+            let mut order_ids = soroban_sdk::Vec::new(&env);
             for j in 0..results.len() {
                 if let Some(id) = results.get(j) {
-                    all_ids.push_back(id as u32);
+                    order_ids.push_back(id as u32);
                 }
             }
-            env.storage().persistent().set(&ids_key, &all_ids);
-            Self::extend_persistent(&env, &ids_key);
-
-            let count_key = DataKey::EscrowCount;
-            let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32);
-            env.storage()
-                .persistent()
-                .set(&count_key, &(count + results.len()));
-            Self::extend_persistent(&env, &count_key);
+            Self::update_escrow_indices_batch_atomic(&env, &order_ids);
         }
 
         Self::exit_reentry_guard(&env);

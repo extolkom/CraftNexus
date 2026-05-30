@@ -11,7 +11,7 @@ fn setup_test(
     env: &Env,
     mock_auth: bool,
 ) -> (
-    EscrowContractClient<'static>,
+    CraftNexusContractClient<'static>,
     Address,
     Address,
     Address,
@@ -22,8 +22,8 @@ fn setup_test(
     if mock_auth {
         env.mock_all_auths();
     }
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(env, &contract_id);
 
     let buyer = Address::generate(env);
     let seller = Address::generate(env);
@@ -35,6 +35,7 @@ fn setup_test(
     let token_admin_client = token::StellarAssetClient::new(env, &token_contract.address());
 
     let arbitrator = Address::generate(env);
+    let onboarding_contract = Address::generate(env);
 
     // Set a non-zero timestamp for event tests
     env.ledger().with_mut(|li| {
@@ -47,7 +48,7 @@ fn setup_test(
         &admin,
         &arbitrator,
         &500,
-        &onboarding_contract,
+        &Some(onboarding_contract.clone()),
     );
 
     // Set min amount to 0 for tests to pass with small amounts
@@ -561,8 +562,8 @@ fn test_platform_fee_deduction_5_percent() {
 fn test_platform_fee_deduction_10_percent() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
     let buyer = Address::generate(&env);
     let seller = Address::generate(&env);
     let platform_wallet = Address::generate(&env);
@@ -634,8 +635,8 @@ fn test_calculate_seller_net_amount() {
 fn test_update_platform_fee() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let platform_wallet = Address::generate(&env);
     let seller = Address::generate(&env);
@@ -698,8 +699,8 @@ fn test_update_platform_fee() {
 fn test_update_platform_fee_too_high() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let platform_wallet = Address::generate(&env);
 
@@ -746,8 +747,8 @@ fn test_total_fees_accumulate() {
 fn test_initialize_emits_config_events() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let platform_wallet = Address::generate(&env);
     let arbitrator = Address::generate(&env);
@@ -954,7 +955,7 @@ fn test_admin_transfer_can_be_cancelled() {
     let new_admin = Address::generate(&env);
     client.update_admin(&new_admin);
 
-    client.cancel_admin_transfer().unwrap();
+    client.cancel_admin_transfer();
 
     let config = client.get_platform_config();
     assert_eq!(config.admin, admin);
@@ -1031,8 +1032,8 @@ fn test_fee_rounding_floor_behavior_small_amounts() {
 fn test_fee_rounding_custom_bps_025_percent() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
     let platform_wallet = Address::generate(&env);
     let admin = Address::generate(&env);
 
@@ -1055,8 +1056,8 @@ fn test_fee_rounding_custom_bps_025_percent() {
 fn test_integration_multiple_tokens_and_escrows() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     let buyer = Address::generate(&env);
     let seller = Address::generate(&env);
@@ -1483,11 +1484,11 @@ fn test_contract_address_admin_is_authorized() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, EscrowContract);
-    let client = EscrowContractClient::new(&env, &contract_id);
+    let contract_id = env.register_contract(None, CraftNexusContract);
+    let client = CraftNexusContractClient::new(&env, &contract_id);
 
     let platform_wallet = Address::generate(&env);
-    let admin_contract = env.register_contract(None, EscrowContract);
+    let admin_contract = env.register_contract(None, CraftNexusContract);
     let arbitrator = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token_contract = env.register_stellar_asset_contract_v2(token_admin.clone());
@@ -1559,9 +1560,9 @@ fn test_contract_upgrade_success() {
     // To test update_wasm, we need a WASM hash that "exists" in the test environment.
     // We can upload a tiny dummy WASM to get a valid hash.
     let dummy_wasm = Bytes::from_array(&env, &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
-    let _new_wasm_hash = env.deployer().upload_contract_wasm(dummy_wasm);
+    let new_wasm_hash = env.deployer().upload_contract_wasm(dummy_wasm);
 
-    client.execute_upgrade();
+    client.execute_upgrade(&new_wasm_hash);
 
     // Version should be 2
     assert_eq!(client.get_version(), 2);
@@ -1574,10 +1575,10 @@ fn test_contract_upgrade_unauthorized() {
     // Do NOT mock auth globally
     let (client, _, _, _, _, _, _) = setup_test(&env, false);
 
-    let _dummy_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let dummy_hash = BytesN::from_array(&env, &[1u8; 32]);
 
     // Attempt upgrade without admin auth
-    client.execute_upgrade();
+    client.execute_upgrade(&dummy_hash);
 }
 
 #[test]
