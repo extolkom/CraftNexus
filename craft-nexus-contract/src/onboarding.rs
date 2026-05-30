@@ -12,6 +12,8 @@ const CURRENT_USER_PROFILE_VERSION: u32 = 4;
 /// Cooldown period for username changes to prevent squatting and rapid identity rotation.
 /// 30 days in seconds.
 const USERNAME_CHANGE_COOLDOWN: u64 = 30 * 24 * 60 * 60;
+/// Maximum verification history entries retained per user (#519).
+const MAX_VERIFICATION_HISTORY: u32 = 10;
 
 #[cfg(test)]
 #[path = "onboarding_test.rs"]
@@ -37,8 +39,13 @@ pub enum DataKey {
     VerificationQueueTail,
     /// Queue index -> address mapping for manual verification requests (#138)
     VerificationQueueIndex(u64),
-    /// Verification history log per user (#63)
+    /// DEPRECATED: Legacy Vec-based verification history (#63).
+    /// Migrated lazily to indexed compact entries (#519).
     VerificationHistory(Address),
+    /// Count of compact verification history entries per user (#519)
+    VerificationHistoryCount(Address),
+    /// Indexed compact verification history entry (#519)
+    VerificationHistoryIndexed(Address, u32),
     /// Username change fee (in stroops) - Issue #114
     UsernameChangeFee,
     /// Token used to collect username change fees (#134)
@@ -149,6 +156,27 @@ pub struct VerificationEntry {
     pub action: String,
     /// Address that performed the action (None for auto-verification)
     pub by: Option<Address>,
+}
+
+/// Compact action code for indexed verification history storage (#519).
+#[contracttype]
+#[derive(Copy, Clone, Eq, PartialEq)]
+#[repr(u32)]
+enum VerificationActionCode {
+    Requested = 0,
+    Approved = 1,
+    Rejected = 2,
+    AutoVerified = 3,
+    UsernameChangedRevoked = 4,
+}
+
+/// Lightweight on-chain verification history entry (#519).
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+struct CompactVerificationEntry {
+    timestamp: u64,
+    action: VerificationActionCode,
+    by: Option<Address>,
 }
 
 /// Contract configuration
@@ -559,10 +587,137 @@ impl OnboardingContract {
 
     fn read_username_fee_wallet(env: &Env, config: &OnboardingConfig) -> Address {
         let key = DataKey::UsernameChangeFeeWallet;
-        env.storage()
+        let wallet = env
+            .storage()
             .persistent()
             .get(&key)
-            .unwrap_or(config.platform_admin.clone())
+            .unwrap_or(config.platform_admin.clone());
+        if env.storage().persistent().has(&key) {
+            Self::extend_persistent(env, &key);
+        }
+        wallet
+    }
+
+    fn read_user_metrics(env: &Env, address: &Address) -> UserMetrics {
+        let key = DataKey::UserMetrics(address.clone());
+        let metrics = env.storage().persistent().get(&key).unwrap_or(UserMetrics {
+            total_escrow_count: 0,
+            total_volume: 0,
+        });
+        if env.storage().persistent().has(&key) {
+            Self::extend_persistent(env, &key);
+        }
+        metrics
+    }
+
+    fn verification_action_to_string(env: &Env, action: VerificationActionCode) -> String {
+        match action {
+            VerificationActionCode::Requested => String::from_str(env, "requested"),
+            VerificationActionCode::Approved => String::from_str(env, "approved"),
+            VerificationActionCode::Rejected => String::from_str(env, "rejected"),
+            VerificationActionCode::AutoVerified => String::from_str(env, "auto_verified"),
+            VerificationActionCode::UsernameChangedRevoked => {
+                String::from_str(env, "username_changed_revoked")
+            }
+        }
+    }
+
+    fn parse_verification_action(env: &Env, action: &String) -> VerificationActionCode {
+        if action == &String::from_str(env, "requested") {
+            VerificationActionCode::Requested
+        } else if action == &String::from_str(env, "approved") {
+            VerificationActionCode::Approved
+        } else if action == &String::from_str(env, "rejected") {
+            VerificationActionCode::Rejected
+        } else if action == &String::from_str(env, "auto_verified") {
+            VerificationActionCode::AutoVerified
+        } else {
+            VerificationActionCode::UsernameChangedRevoked
+        }
+    }
+
+    fn migrate_legacy_verification_history(env: &Env, user: &Address) {
+        let legacy_key = DataKey::VerificationHistory(user.clone());
+        if !env.storage().persistent().has(&legacy_key) {
+            return;
+        }
+
+        let history: Vec<VerificationEntry> = env
+            .storage()
+            .persistent()
+            .get(&legacy_key)
+            .unwrap_or(Vec::new(env));
+
+        let count_key = DataKey::VerificationHistoryCount(user.clone());
+        let mut count: u32 = 0;
+        for i in 0..history.len() {
+            if let Some(entry) = history.get(i) {
+                let compact = CompactVerificationEntry {
+                    timestamp: entry.timestamp,
+                    action: Self::parse_verification_action(env, &entry.action),
+                    by: entry.by.clone(),
+                };
+                let entry_key = DataKey::VerificationHistoryIndexed(user.clone(), i);
+                env.storage().persistent().set(&entry_key, &compact);
+                Self::extend_persistent(env, &entry_key);
+                count = i + 1;
+            }
+        }
+
+        if count > 0 {
+            env.storage().persistent().set(&count_key, &count);
+            Self::extend_persistent(env, &count_key);
+        }
+
+        env.storage().persistent().remove(&legacy_key);
+    }
+
+    fn append_verification_history(
+        env: &Env,
+        user: &Address,
+        action: VerificationActionCode,
+        by: Option<Address>,
+    ) {
+        Self::migrate_legacy_verification_history(env, user);
+
+        let count_key = DataKey::VerificationHistoryCount(user.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+
+        let slot = if count >= MAX_VERIFICATION_HISTORY {
+            for i in 1..MAX_VERIFICATION_HISTORY {
+                let src_key = DataKey::VerificationHistoryIndexed(user.clone(), i);
+                if let Some(entry) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, CompactVerificationEntry>(&src_key)
+                {
+                    let dst_key = DataKey::VerificationHistoryIndexed(user.clone(), i - 1);
+                    env.storage().persistent().set(&dst_key, &entry);
+                    Self::extend_persistent(env, &dst_key);
+                    env.storage().persistent().remove(&src_key);
+                }
+            }
+            MAX_VERIFICATION_HISTORY - 1
+        } else {
+            count
+        };
+
+        let entry = CompactVerificationEntry {
+            timestamp: env.ledger().timestamp(),
+            action,
+            by,
+        };
+        let entry_key = DataKey::VerificationHistoryIndexed(user.clone(), slot);
+        env.storage().persistent().set(&entry_key, &entry);
+        Self::extend_persistent(env, &entry_key);
+
+        let new_count = if count >= MAX_VERIFICATION_HISTORY {
+            MAX_VERIFICATION_HISTORY
+        } else {
+            count + 1
+        };
+        env.storage().persistent().set(&count_key, &new_count);
+        Self::extend_persistent(env, &count_key);
     }
 
     fn collect_username_change_fee(env: &Env, user: &Address, config: &OnboardingConfig) {
@@ -786,7 +941,18 @@ impl OnboardingContract {
             .set(&DataKey::Username(normalized.clone()), &user);
         Self::extend_persistent(&env, &DataKey::Username(normalized.clone()));
 
-        // Emit event
+        // Emit UserOnboarded event.
+        //
+        // Event topic  : `("UserOnboarded",)`
+        // Event payload: `UserOnboardedEvent { user, username, role }`
+        //
+        // Fields:
+        // * `user`     - The wallet address that was just onboarded.
+        // * `username` - The normalized (lowercased, trimmed) username stored on-chain.
+        // * `role`     - The role assigned: `Buyer` (1) or `Artisan` (2).
+        //
+        // Off-chain indexers should subscribe to this event to build user registries
+        // and trigger downstream workflows (e.g. welcome emails, dashboard provisioning).
         env.events().publish(
             (Symbol::new(&env, "UserOnboarded"),),
             UserOnboardedEvent {
@@ -1200,13 +1366,7 @@ impl OnboardingContract {
     /// Get activity metrics for a user.
     /// Returns zeroed metrics if no escrow activity has been recorded yet.
     pub fn get_user_metrics(env: Env, address: Address) -> UserMetrics {
-        env.storage()
-            .persistent()
-            .get::<DataKey, UserMetrics>(&DataKey::UserMetrics(address.clone()))
-            .unwrap_or(UserMetrics {
-                total_escrow_count: 0,
-                total_volume: 0,
-            })
+        Self::read_user_metrics(&env, &address)
     }
 
     /// Increment a user's activity metrics (called by the escrow contract).
@@ -1233,11 +1393,7 @@ impl OnboardingContract {
         }
 
         let key = DataKey::UserMetrics(address.clone());
-        let mut metrics: UserMetrics =
-            env.storage().persistent().get(&key).unwrap_or(UserMetrics {
-                total_escrow_count: 0,
-                total_volume: 0,
-            });
+        let mut metrics = Self::read_user_metrics(&env, &address);
 
         metrics.total_escrow_count = metrics
             .total_escrow_count
@@ -1307,23 +1463,12 @@ impl OnboardingContract {
             env.storage().persistent().set(&profile_key, &profile);
             Self::extend_persistent(env, &profile_key);
 
-            // Append auto-verify entry to history
-            let hist_key = DataKey::VerificationHistory(address.clone());
-            let mut history: Vec<VerificationEntry> = env
-                .storage()
-                .persistent()
-                .get(&hist_key)
-                .unwrap_or(Vec::new(env));
-            history.push_back(VerificationEntry {
-                timestamp: env.ledger().timestamp(),
-                action: String::from_str(env, "auto_verified"),
-                by: None,
-            });
-            if history.len() > 10 {
-                history.remove(0);
-            }
-            env.storage().persistent().set(&hist_key, &history);
-            Self::extend_persistent(env, &hist_key);
+            Self::append_verification_history(
+                env,
+                address,
+                VerificationActionCode::AutoVerified,
+                None,
+            );
 
             env.events()
                 .publish((Symbol::new(env, "UserVerified"),), address);
@@ -1392,29 +1537,20 @@ impl OnboardingContract {
             "User not found"
         );
 
-        if Self::is_verification_pending(&env, &user) {
+                Self::extend_persistent(&env, &DataKey::UserProfile(user.clone()));
+
+if Self::is_verification_pending(&env, &user) {
             return;
         }
 
         Self::enqueue_verification_request(&env, &user);
 
-        // Append to history
-        let hist_key = DataKey::VerificationHistory(user.clone());
-        let mut history: Vec<VerificationEntry> = env
-            .storage()
-            .persistent()
-            .get(&hist_key)
-            .unwrap_or(Vec::new(&env));
-        history.push_back(VerificationEntry {
-            timestamp: env.ledger().timestamp(),
-            action: String::from_str(&env, "requested"),
-            by: Some(user.clone()),
-        });
-        if history.len() > 10 {
-            history.remove(0);
-        }
-        env.storage().persistent().set(&hist_key, &history);
-        Self::extend_persistent(&env, &hist_key);
+        Self::append_verification_history(
+            &env,
+            &user,
+            VerificationActionCode::Requested,
+            Some(user.clone()),
+        );
     }
 
     /// Approve or reject a pending verification request (admin only).
@@ -1445,24 +1581,17 @@ impl OnboardingContract {
 
         Self::clear_verification_request(&env, &user);
 
-        // Append to history
-        let action = if approve { "approved" } else { "rejected" };
-        let hist_key = DataKey::VerificationHistory(user.clone());
-        let mut history: Vec<VerificationEntry> = env
-            .storage()
-            .persistent()
-            .get(&hist_key)
-            .unwrap_or(Vec::new(&env));
-        history.push_back(VerificationEntry {
-            timestamp: env.ledger().timestamp(),
-            action: String::from_str(&env, action),
-            by: Some(config.platform_admin.clone()),
-        });
-        if history.len() > 10 {
-            history.remove(0);
-        }
-        env.storage().persistent().set(&hist_key, &history);
-        Self::extend_persistent(&env, &hist_key);
+        let action = if approve {
+            VerificationActionCode::Approved
+        } else {
+            VerificationActionCode::Rejected
+        };
+        Self::append_verification_history(
+            &env,
+            &user,
+            action,
+            Some(config.platform_admin.clone()),
+        );
 
         if approve {
             env.events()
@@ -1472,11 +1601,32 @@ impl OnboardingContract {
 
     /// Get the full verification history for a user.
     pub fn get_verification_history(env: Env, user: Address) -> Vec<VerificationEntry> {
-        let hist_key = DataKey::VerificationHistory(user.clone());
-        env.storage()
-            .persistent()
-            .get(&hist_key)
-            .unwrap_or(Vec::new(&env))
+        Self::migrate_legacy_verification_history(&env, &user);
+
+        let count_key = DataKey::VerificationHistoryCount(user.clone());
+        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if env.storage().persistent().has(&count_key) {
+            Self::extend_persistent(&env, &count_key);
+        }
+
+        let mut result = Vec::new(&env);
+        for index in 0..count {
+            let entry_key = DataKey::VerificationHistoryIndexed(user.clone(), index);
+            if let Some(compact) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, CompactVerificationEntry>(&entry_key)
+            {
+                result.push_back(VerificationEntry {
+                    timestamp: compact.timestamp,
+                    action: Self::verification_action_to_string(&env, compact.action),
+                    by: compact.by,
+                });
+                Self::extend_persistent(&env, &entry_key);
+            }
+        }
+
+        result
     }
 
     /// Get all addresses currently awaiting manual verification (admin helper).
@@ -1621,11 +1771,11 @@ impl OnboardingContract {
         );
 
         // Enforce cooldown between username changes for the same user.
-        if let Some(last_change) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, u64>(&DataKey::LastUsernameChange(user.clone()))
-        {
+        let cooldown_key = DataKey::LastUsernameChange(user.clone());
+        if let Some(last_change) = env.storage().persistent().get::<DataKey, u64>(&cooldown_key) {
+            if env.storage().persistent().has(&cooldown_key) {
+                Self::extend_persistent(&env, &cooldown_key);
+            }
             let current_time = env.ledger().timestamp();
             assert!(
                 current_time > last_change.saturating_add(USERNAME_CHANGE_COOLDOWN),
@@ -1670,23 +1820,12 @@ impl OnboardingContract {
         );
         Self::extend_persistent(&env, &DataKey::LastUsernameChange(user.clone()));
 
-        // Add history entry for revocation
-        let hist_key = DataKey::VerificationHistory(user.clone());
-        let mut history: Vec<VerificationEntry> = env
-            .storage()
-            .persistent()
-            .get(&hist_key)
-            .unwrap_or(Vec::new(&env));
-        history.push_back(VerificationEntry {
-            timestamp: env.ledger().timestamp(),
-            action: String::from_str(&env, "username_changed_revoked"),
-            by: Some(user.clone()),
-        });
-        if history.len() > 10 {
-            history.remove(0);
-        }
-        env.storage().persistent().set(&hist_key, &history);
-        Self::extend_persistent(&env, &hist_key);
+        Self::append_verification_history(
+            &env,
+            &user,
+            VerificationActionCode::UsernameChangedRevoked,
+            Some(user.clone()),
+        );
 
         // Emit event
         env.events()

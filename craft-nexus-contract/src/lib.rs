@@ -240,10 +240,15 @@ pub enum DataKey {
     OnboardingContractAddress,
     /// Map of whitelisted token addresses (Address -> bool); enforcement active when non-empty
     WhitelistedTokens,
-    /// Ordered list of all escrow order IDs ever created (Vec<u32>); used for off-chain enumeration
+    /// DEPRECATED: Legacy monolithic Vec of all escrow order IDs.
+    /// New writes use [`DataKey::GlobalEscrowIdIndexed`] (#515). Kept for
+    /// lazy migration on the next index update or paginated read.
     AllEscrowIds,
-    /// Total count of escrows ever created; lightweight O(1) alternative to AllEscrowIds.len()
+    /// Total count of escrows ever created; O(1) length for indexed enumeration
     EscrowCount,
+    /// Indexed global escrow order ID by creation sequence (#515).
+    /// Each entry stores one `u32` order ID, avoiding Vec rewrites on batch create.
+    GlobalEscrowIdIndexed(u32),
     /// Fallback admin address for recovery if primary admin storage is corrupted (#240)
     FallbackAdmin,
     /// Timestamp when admin recovery mechanism becomes available (time-lock safety)
@@ -735,6 +740,65 @@ pub struct PartialRefundProposal {
     pub proposed_at: u64,
 }
 
+/// User roles in the CraftNexus platform
+#[contracttype]
+#[derive(Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(any(test, feature = "testutils"), derive(Debug))]
+pub enum UserRole {
+    None = 0,      // User has not onboarded
+    Buyer = 1,     // Can purchase items
+    Artisan = 2,   // Can sell items and create escrow
+    Admin = 3,     // Platform administrator
+    Moderator = 4, // Can help manage disputes
+}
+
+/// Profile status for users
+#[contracttype]
+#[derive(Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(any(test, feature = "testutils"), derive(Debug))]
+pub enum ProfileStatus {
+    Active = 0,
+    Deactivated = 1,
+}
+
+/// Onboarding status for users
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(any(test, feature = "testutils"), derive(Debug))]
+pub struct UserProfile {
+    pub version: u32,
+    pub address: Address,
+    pub role: UserRole,
+    pub username: String,
+    pub registered_at: u64,
+    pub is_verified: bool,
+    /// Count of escrows where this user was on the winning side (#100)
+    pub successful_trades: u32,
+    /// Count of escrows that ended in a dispute against this user (#100)
+    pub disputed_trades: u32,
+    /// Portfolio CID for artisan showcase (IPFS) - Issue #112
+    pub portfolio_cid: Option<String>,
+    /// Status of the user profile - Issue #113
+    pub status: ProfileStatus,
+}
+
+#[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+#[cfg_attr(any(test, feature = "testutils"), derive(Debug))]
+pub struct LegacyUserProfile {
+    pub address: Address,
+    pub role: UserRole,
+    pub username: String,
+    pub registered_at: u64,
+    pub is_verified: bool,
+    /// Count of escrows where this user was on the winning side (#100)
+    pub successful_trades: u32,
+    /// Count of escrows that ended in a dispute against this user (#100)
+    pub disputed_trades: u32,
+    /// Portfolio CID for artisan showcase (IPFS) - Issue #112
+    pub portfolio_cid: Option<String>,
+}
+
 /// Minimal cross-contract interface for the OnboardingContract.
 /// Used by CraftNexusContract to update user reputation and activity metrics
 /// when escrow state changes (release, refund, resolve).
@@ -748,12 +812,18 @@ pub trait OnboardingInterface {
         volume_delta: i128,
         token_address: Address,
     );
+    fn deactivate_profile(env: Env, user: Address);
+    fn verify_user(env: Env, user: Address) -> UserProfile;
 }
+
 #[contract]
 pub struct CraftNexusContract;
 
-/// Alias for backward compatibility
+/// Alias and compatibility layers
 pub type EscrowContract = CraftNexusContract;
+pub const EscrowContract: CraftNexusContract = CraftNexusContract;
+pub type EscrowContractClient<'a> = CraftNexusContractClient<'a>;
+pub type CreateEscrowParams = EscrowCreateParams;
 
 /// Guard to ensure reentry protection is cleared even if a panic or error occurs.
 /// This is essential to prevent contract locks from persisting across failed calls.
@@ -888,6 +958,17 @@ impl CraftNexusContract {
         }
     }
 
+    /// Validate an optional IPFS CID string, panicking with `InvalidIpfsHash` if present but invalid.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `ipfs_hash` - Optional CID string to validate
+    ///
+    /// # Errors
+    /// Panics with `Error::InvalidIpfsHash` if the CID is present but fails `validate_ipfs_cid`.
+    ///
+    /// # Storage side-effects
+    /// None — this is a pure validation helper with no storage reads or writes.
     fn validate_optional_ipfs_hash(env: &Env, ipfs_hash: &Option<String>) {
         if let Some(cid) = ipfs_hash {
             if !Self::validate_ipfs_cid(cid) {
@@ -896,6 +977,17 @@ impl CraftNexusContract {
         }
     }
 
+    /// Validate an optional metadata hash, panicking with `InvalidMetadataHash` if present but not 32 bytes.
+    ///
+    /// # Arguments
+    /// * `env` - The contract environment
+    /// * `metadata_hash` - Optional raw bytes to validate
+    ///
+    /// # Errors
+    /// Panics with `Error::InvalidMetadataHash` if the hash is present but its length is not exactly 32 bytes.
+    ///
+    /// # Storage side-effects
+    /// None — this is a pure validation helper with no storage reads or writes.
     fn validate_optional_metadata_hash(env: &Env, metadata_hash: &Option<Bytes>) {
         if let Some(hash) = metadata_hash {
             if hash.len() != 32 {
@@ -1084,57 +1176,48 @@ impl CraftNexusContract {
         env.storage().temporary().remove(&DataKey::ReentryGuard);
     }
 
-    /// Atomically updates both AllEscrowIds and EscrowCount to maintain consistency.
-    /// This function ensures that the count and ID list never diverge, which is critical
-    /// for off-chain enumeration and audit consistency (Issue #226).
+    /// Atomically appends one escrow ID to the indexed global registry and
+    /// increments `EscrowCount` (#515 / Issue #226).
     fn update_escrow_indices_atomic(env: &Env, order_id: u32) {
-        // Update the global escrow ID list
-        let ids_key = DataKey::AllEscrowIds;
-        let mut all_ids: soroban_sdk::Vec<u32> = env
-            .storage()
-            .persistent()
-            .get(&ids_key)
-            .unwrap_or(soroban_sdk::Vec::new(&env));
-        all_ids.push_back(order_id);
-        env.storage().persistent().set(&ids_key, &all_ids);
-        Self::extend_persistent(&env, &ids_key);
+        // Issue #515 — O(1) indexed append replaces monolithic AllEscrowIds Vec
+        // rewrites. Legacy Vec entries are migrated lazily on first touch.
+        Self::migrate_legacy_all_escrow_ids(env);
 
-        // Update the escrow count in lockstep with the ID list
         let count_key = DataKey::EscrowCount;
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32);
+        let count = Self::get_persistent_u32(env, &count_key);
+
+        let index_key = DataKey::GlobalEscrowIdIndexed(count);
+        env.storage().persistent().set(&index_key, &order_id);
+        Self::extend_persistent(env, &index_key);
+
         env.storage().persistent().set(&count_key, &(count + 1));
-        Self::extend_persistent(&env, &count_key);
+        Self::extend_persistent(env, &count_key);
     }
 
-    /// Atomically updates both AllEscrowIds and EscrowCount for batch operations.
-    /// Ensures all order IDs are added before count is incremented, preventing races.
+    /// Atomically appends escrow IDs to the indexed global registry for batch
+    /// operations (#515). Each ID is stored under its own key so batch creates
+    /// avoid rewriting a growing Vec.
     fn update_escrow_indices_batch_atomic(env: &Env, order_ids: &soroban_sdk::Vec<u32>) {
         if order_ids.is_empty() {
             return;
         }
 
-        // Batch update: add all IDs first
-        let ids_key = DataKey::AllEscrowIds;
-        let mut all_ids: soroban_sdk::Vec<u32> = env
-            .storage()
-            .persistent()
-            .get(&ids_key)
-            .unwrap_or(soroban_sdk::Vec::new(&env));
+        Self::migrate_legacy_all_escrow_ids(env);
+
+        let count_key = DataKey::EscrowCount;
+        let mut count = Self::get_persistent_u32(env, &count_key);
+
         for i in 0..order_ids.len() {
             if let Some(id) = order_ids.get(i) {
-                all_ids.push_back(id);
+                let index_key = DataKey::GlobalEscrowIdIndexed(count);
+                env.storage().persistent().set(&index_key, &id);
+                Self::extend_persistent(env, &index_key);
+                count += 1;
             }
         }
-        env.storage().persistent().set(&ids_key, &all_ids);
-        Self::extend_persistent(&env, &ids_key);
 
-        // Then increment count by the number of IDs added
-        let count_key = DataKey::EscrowCount;
-        let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32);
-        env.storage()
-            .persistent()
-            .set(&count_key, &(count + order_ids.len() as u32));
-        Self::extend_persistent(&env, &count_key);
+        env.storage().persistent().set(&count_key, &count);
+        Self::extend_persistent(env, &count_key);
     }
 
     // IMPORTANT: this validation is intentionally scoped to escrow creation-time
@@ -1251,6 +1334,50 @@ impl CraftNexusContract {
         env.storage()
             .persistent()
             .extend_ttl(key, TTL_THRESHOLD, TTL_EXTENSION);
+    }
+
+    /// Read a persistent `u32` and extend its TTL when the key exists (#515).
+    fn get_persistent_u32(env: &Env, key: &DataKey) -> u32 {
+        let value = env.storage().persistent().get(key).unwrap_or(0u32);
+        if env.storage().persistent().has(key) {
+            Self::extend_persistent(env, key);
+        }
+        value
+    }
+
+    /// Migrate legacy `AllEscrowIds` Vec storage to indexed keys (#515).
+    fn migrate_legacy_all_escrow_ids(env: &Env) {
+        let legacy_key = DataKey::AllEscrowIds;
+        if !env.storage().persistent().has(&legacy_key) {
+            return;
+        }
+
+        let all_ids: soroban_sdk::Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&legacy_key)
+            .unwrap_or(soroban_sdk::Vec::new(env));
+
+        for i in 0..all_ids.len() {
+            if let Some(id) = all_ids.get(i) {
+                let index_key = DataKey::GlobalEscrowIdIndexed(i);
+                if !env.storage().persistent().has(&index_key) {
+                    env.storage().persistent().set(&index_key, &id);
+                    Self::extend_persistent(env, &index_key);
+                }
+            }
+        }
+
+        let count_key = DataKey::EscrowCount;
+        let stored_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        if stored_count < all_ids.len() {
+            env.storage()
+                .persistent()
+                .set(&count_key, &(all_ids.len() as u32));
+            Self::extend_persistent(env, &count_key);
+        }
+
+        env.storage().persistent().remove(&legacy_key);
     }
 
     /// Returns the configured maximum release window (in seconds).
@@ -1433,7 +1560,8 @@ impl CraftNexusContract {
         let old_min = config.min_release_window;
         config.min_release_window = min_window;
 
-        env.storage().instance().set(&DataKey::PlatformConfig, &config);
+        env.storage().persistent().set(&DataKey::PlatformConfig, &config);
+        Self::extend_persistent(&env, &DataKey::PlatformConfig);
 
         Self::emit_config_updated(
             &env,
@@ -1683,8 +1811,7 @@ impl CraftNexusContract {
 
         let previous_admin = config.admin.clone();
         config.pending_admin = Some(new_admin.clone());
-        env.storage().persistent().set(&PLATFORM_FEE, &config);
-        Self::extend_persistent(&env, &PLATFORM_FEE);
+        env.storage().instance().set(&DataKey::PlatformConfig, &config);
 
         // Emit audit event for admin change proposal
         Self::emit_admin_changed(&env, previous_admin, new_admin, "admin_proposed");
@@ -2018,10 +2145,6 @@ impl CraftNexusContract {
             .set(&seller_count_key, &(seller_count + 1));
         Self::extend_persistent(&env, &seller_count_key);
 
-        // Track active escrows for both parties
-        Self::update_active_obligations(&env, &buyer, 1);
-        Self::update_active_obligations(&env, &seller, 1);
-
         // Transfer funds from buyer to contract
         let client = token::Client::new(&env, &token);
         client.transfer(&buyer, &env.current_contract_address(), &amount);
@@ -2210,6 +2333,7 @@ impl CraftNexusContract {
         limit: u32,
         reverse: bool,
     ) -> Result<soroban_sdk::Vec<u64>, Error> {
+        buyer.require_auth();
         let mut result = soroban_sdk::Vec::new(&env);
 
         // Try new indexed storage first
@@ -2282,6 +2406,7 @@ impl CraftNexusContract {
         limit: u32,
         reverse: bool,
     ) -> Result<soroban_sdk::Vec<u64>, Error> {
+        seller.require_auth();
         let mut result = soroban_sdk::Vec::new(&env);
 
         // Try new indexed storage first
@@ -3350,8 +3475,6 @@ impl CraftNexusContract {
         proof: MetadataRevealProof,
         authorized_address: Address,
     ) -> bool {
-        authorized_address.require_auth();
-
         let escrow = Self::get_escrow(env.clone(), order_id);
         let config = Self::get_platform_config_internal(&env);
 
@@ -3952,6 +4075,15 @@ impl CraftNexusContract {
     /// # Errors
     /// - BatchLimitExceeded if batch exceeds MAX_BATCH_SIZE
     /// - Any validation error from individual escrows
+    pub fn create_escrows_batch(
+        env: Env,
+        params: soroban_sdk::Vec<EscrowCreateParams>,
+    ) -> Result<soroban_sdk::Vec<u64>, Error> {
+        let batch_id = env.storage().instance().get(&Symbol::new(&env, "next_batch_id")).unwrap_or(1u64);
+        env.storage().instance().set(&Symbol::new(&env, "next_batch_id"), &(batch_id + 1));
+        Self::create_batch_escrow(env, batch_id, params)
+    }
+
     pub fn create_batch_escrow(
         env: Env,
         batch_id: u64,
@@ -4515,14 +4647,27 @@ impl CraftNexusContract {
         let cooldown_key = DataKey::StakeCooldownEnd(artisan.clone());
         let existing_cooldown: u64 = env.storage().persistent().get(&cooldown_key).unwrap_or(0);
         
-        if existing_cooldown == 0 {
+        let cooldown_end = if existing_cooldown == 0 {
             // No existing cooldown, initialize new one
             let config = Self::get_platform_config_internal(&env);
-            let cooldown_end = env.ledger().timestamp() + config.stake_cooldown as u64;
-            env.storage().persistent().set(&cooldown_key, &cooldown_end);
+            let end = env.ledger().timestamp() + config.stake_cooldown as u64;
+            env.storage().persistent().set(&cooldown_key, &end);
             Self::extend_persistent(&env, &cooldown_key);
-        }
-        // If cooldown already exists, do NOT reset it - prevents gaming the system
+            end
+        } else {
+            existing_cooldown
+        };
+
+        // Push deposit entry to queue
+        let queue_key = DataKey::ArtisanStakeQueue(artisan.clone());
+        let mut queue: soroban_sdk::Vec<StakeDeposit> = env
+            .storage()
+            .persistent()
+            .get(&queue_key)
+            .unwrap_or(soroban_sdk::Vec::new(&env));
+        queue.push_back(StakeDeposit { amount, cooldown_end });
+        env.storage().persistent().set(&queue_key, &queue);
+        Self::extend_persistent(&env, &queue_key);
     }
 
     /// Unstake previously staked tokens after the cooldown period has elapsed.
@@ -4740,18 +4885,15 @@ impl CraftNexusContract {
     /// `get_all_escrow_ids_iterative` to paginate the full ID set without
     /// hitting Soroban CPU/memory resource limits.
     pub fn get_escrow_count(env: Env) -> u32 {
-        let key = DataKey::EscrowCount;
-        env.storage()
-            .persistent()
-            .get::<DataKey, u32>(&key)
-            .unwrap_or(0)
+        Self::migrate_legacy_all_escrow_ids(&env);
+        Self::get_persistent_u32(&env, &DataKey::EscrowCount)
     }
 
     /// Returns a page of all escrow order IDs created on the platform, in creation order.
     ///
     /// This is the recommended pattern for frontends to enumerate every escrow without
     /// hitting Soroban resource limits. The function reads a bounded slice of the
-    /// globally maintained `AllEscrowIds` index; no on-chain loops proportional to
+    /// indexed `GlobalEscrowIdIndexed` registry; no on-chain loops proportional to
     /// the total escrow count are performed at call time.
     ///
     /// # Usage pattern (frontend / off-chain)
@@ -4768,8 +4910,9 @@ impl CraftNexusContract {
     /// To enumerate storage keys directly via the RPC without calling this function,
     /// use the `getLedgerEntries` method or the experimental `getContractData` cursor
     /// endpoint.  Relevant key patterns:
-    /// - `DataKey::AllEscrowIds`           – the full ordered ID list (this index)
+    /// - `DataKey::GlobalEscrowIdIndexed(index)` – indexed global escrow ID (#515)
     /// - `DataKey::EscrowCount`            – u32 total count
+    /// - `DataKey::AllEscrowIds`           – DEPRECATED legacy Vec index
     /// - `(ESCROW, order_id: u32)`         – individual escrow struct
     /// - `DataKey::BuyerEscrows(address)`  – DEPRECATED: Legacy Vec<u64> of IDs for a buyer
     /// - `DataKey::SellerEscrows(address)` – DEPRECATED: Legacy Vec<u64> of IDs for a seller
@@ -4790,22 +4933,27 @@ impl CraftNexusContract {
             return soroban_sdk::Vec::new(&env);
         }
 
-        let key = DataKey::AllEscrowIds;
-        let all_ids: soroban_sdk::Vec<u32> = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(soroban_sdk::Vec::new(&env));
+        Self::migrate_legacy_all_escrow_ids(&env);
 
+        let total = Self::get_persistent_u32(&env, &DataKey::EscrowCount);
         let start = page * limit;
-        let len = all_ids.len();
 
-        if start >= len {
+        if start >= total {
             return soroban_sdk::Vec::new(&env);
         }
 
-        let end = (start + limit).min(len);
-        all_ids.slice(start..end)
+        let end = (start + limit).min(total);
+        let mut result = soroban_sdk::Vec::new(&env);
+
+        for index in start..end {
+            let index_key = DataKey::GlobalEscrowIdIndexed(index);
+            if let Some(id) = env.storage().persistent().get(&index_key) {
+                result.push_back(id);
+                Self::extend_persistent(&env, &index_key);
+            }
+        }
+
+        result
     }
 
     /// Accept the outstanding partial refund proposal for a disputed escrow.
