@@ -668,7 +668,32 @@ impl OnboardingContract {
             "Username too long"
         );
 
-        // Check if user already onboarded
+        // Check if user already onboarded (#92).
+        //
+        // Reads the `DataKey::UserProfile(user)` persistent entry to determine
+        // whether this address has already completed onboarding.
+        //
+        // Storage side-effect (existing users only): if a profile is found, its
+        // persistent TTL is extended by `TTL_EXTENSION` ledgers before the panic.
+        // This "optimistic TTL refresh on read" pattern ensures that a profile
+        // that is close to expiry is not silently archived on the same ledger that
+        // rejected a duplicate-onboarding attempt — the failure path should never
+        // be a vector for accidentally losing a live record.
+        //
+        // Preconditions:
+        //   - Config must be initialized (checked and extended above).
+        //   - `user.require_auth()` must have passed (enforced at function entry).
+        //
+        // Integration notes for off-chain integrators (#92):
+        //   - Use `get_user(user)` or subscribe to `UserOnboarded` events as the
+        //     preferred way to check onboarding status; avoid probing this storage
+        //     key directly, as TTL expiry can make `has` return `false` for users
+        //     who have not interacted with the contract recently.
+        //   - `onboard_user` panics (no return value) on a duplicate call, so
+        //     client code should guard with a `get_user` probe or catch the error
+        //     via `try_invoke_contract` before calling this function.
+        //   - Profile shape is versioned via `CURRENT_USER_PROFILE_VERSION`; any
+        //     schema change requires a migration via `migrate_user_profile`.
         let existing: Option<UserProfile> = env
             .storage()
             .persistent()
