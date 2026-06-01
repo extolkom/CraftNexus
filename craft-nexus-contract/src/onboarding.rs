@@ -66,10 +66,10 @@ pub enum DataKey {
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[cfg_attr(any(test, feature = "testutils"), derive(Debug))]
 pub enum UserRole {
-    None = 0,      // User has not onboarded
-    Buyer = 1,     // Can purchase items
-    Artisan = 2,   // Can sell items and create escrow
-    Admin = 3,     // Platform administrator
+    None = 0,    // User has not onboarded
+    Buyer = 1,   // Can purchase items
+    Artisan = 2, // Can sell items and create escrow
+    Admin = 3,   // Platform administrator
     /// Dispute-resolution delegate (Issue #116). Moderators may resolve
     /// escrows when their address is also registered on the escrow
     /// contract's platform config, but they cannot change WASM, platform
@@ -957,7 +957,8 @@ impl OnboardingContract {
     }
 
     fn get_user_profile(env: &Env, user: Address) -> UserProfile {
-        Self::try_get_user_profile(env, user).unwrap_or_else(|| env.panic_with_error(Error::UserNotFound))
+        Self::try_get_user_profile(env, user)
+            .unwrap_or_else(|| env.panic_with_error(Error::UserNotFound))
     }
 
     fn upgrade_user_profile(env: &Env, user: Address, mut profile: UserProfile) -> UserProfile {
@@ -1560,7 +1561,7 @@ impl OnboardingContract {
         // [SECURITY] Endpoint #85: Strict authorization check
         // Only admin can update roles; require_auth() verifies the caller's digital signature
         config.platform_admin.require_auth();
-        
+
         // [SECURITY] Validate new role assignment; prevent unauthorized role escalation
         match new_role {
             UserRole::Admin | UserRole::None => {
@@ -1732,7 +1733,11 @@ impl OnboardingContract {
 
         // Re-claim username — fail if another user took it while deactivated
         let normalized = normalize_username(&env, &profile.username);
-        if env.storage().persistent().has(&DataKey::Username(normalized.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Username(normalized.clone()))
+        {
             env.panic_with_error(Error::UsernameTaken);
         }
         env.storage()
@@ -2473,9 +2478,7 @@ impl OnboardingContract {
             .persistent()
             .get::<DataKey, UserProfile>(&DataKey::UserProfile(address.clone()))
         {
-            Some(profile) => {
-                (profile.successful_trades, profile.disputed_trades)
-            }
+            Some(profile) => (profile.successful_trades, profile.disputed_trades),
             None => (0, 0),
         }
     }
@@ -2534,7 +2537,11 @@ impl OnboardingContract {
 
         // Enforce cooldown between username changes for the same user.
         let cooldown_key = DataKey::LastUsernameChange(user.clone());
-        if let Some(last_change) = env.storage().persistent().get::<DataKey, u64>(&cooldown_key) {
+        if let Some(last_change) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&cooldown_key)
+        {
             if env.storage().persistent().has(&cooldown_key) {
                 Self::extend_persistent(&env, &cooldown_key);
             }
@@ -2713,11 +2720,7 @@ impl OnboardingContract {
     /// Get the current username change fee - Issue #114
     pub fn get_username_change_fee(env: Env) -> i128 {
         let fee_key = DataKey::UsernameChangeFee;
-        let fee = env
-            .storage()
-            .persistent()
-            .get(&fee_key)
-            .unwrap_or(0);
+        let fee = env.storage().persistent().get(&fee_key).unwrap_or(0);
         if env.storage().persistent().has(&fee_key) {
             Self::extend_persistent(&env, &fee_key);
         }

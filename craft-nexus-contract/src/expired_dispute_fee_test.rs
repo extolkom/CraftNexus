@@ -80,10 +80,11 @@ fn create_and_dispute_escrow(
     order_id: u32,
 ) {
     client.create_escrow(buyer, seller, token, &amount, &order_id, &Some(604800));
-    client.dispute_escrow(&order_id, &soroban_sdk::String::from_str(
-        &client.env,
-        "Test dispute",
-    ), buyer);
+    client.dispute_escrow(
+        &order_id,
+        &soroban_sdk::String::from_str(&client.env, "Test dispute"),
+        buyer,
+    );
 }
 
 #[test]
@@ -183,10 +184,7 @@ fn test_policy_refund_minus_platform_fee() {
     );
 
     // Total fees should be tracked
-    assert_eq!(
-        client.get_total_fees_for_token(&token_addr),
-        expected_fee
-    );
+    assert_eq!(client.get_total_fees_for_token(&token_addr), expected_fee);
 }
 
 #[test]
@@ -353,7 +351,14 @@ fn test_expired_dispute_only_works_on_disputed_escrows() {
     let order_id = 1u32;
 
     // Create escrow but don't dispute it
-    client.create_escrow(&buyer, &seller, &token_addr, &amount, &order_id, &Some(604800));
+    client.create_escrow(
+        &buyer,
+        &seller,
+        &token_addr,
+        &amount,
+        &order_id,
+        &Some(604800),
+    );
 
     // Fast forward past dispute duration
     env.ledger().with_mut(|li| {

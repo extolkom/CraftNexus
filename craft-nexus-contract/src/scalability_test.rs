@@ -70,14 +70,7 @@ fn test_indexed_storage_scalability() {
 
     // Create 100 escrows to simulate high-volume user
     for i in 0..100 {
-        client.create_escrow(
-            &buyer,
-            &seller,
-            &token,
-            &1000,
-            &(i + 1),
-            &Some(604800),
-        );
+        client.create_escrow(&buyer, &seller, &token, &1000, &(i + 1), &Some(604800));
     }
 
     // Verify buyer escrow count using indexed storage
@@ -147,26 +140,12 @@ fn test_indexed_storage_multiple_users() {
 
     // Create escrows for buyer1
     for i in 0..50 {
-        client.create_escrow(
-            &buyer1,
-            &seller1,
-            &token,
-            &1000,
-            &(i + 1),
-            &Some(604800),
-        );
+        client.create_escrow(&buyer1, &seller1, &token, &1000, &(i + 1), &Some(604800));
     }
 
     // Create escrows for buyer2
     for i in 0..30 {
-        client.create_escrow(
-            &buyer2,
-            &seller2,
-            &token,
-            &1000,
-            &(i + 51),
-            &Some(604800),
-        );
+        client.create_escrow(&buyer2, &seller2, &token, &1000, &(i + 51), &Some(604800));
     }
 
     // Verify buyer1 count
@@ -296,14 +275,7 @@ fn test_batch_create_with_indexed_storage() {
     let mut order_ids = soroban_sdk::Vec::new(&env);
     for i in 0..10 {
         let order_id = i + 1;
-        let escrow = client.create_escrow(
-            &buyer,
-            &seller,
-            &token,
-            &1000,
-            &order_id,
-            &Some(604800),
-        );
+        let escrow = client.create_escrow(&buyer, &seller, &token, &1000, &order_id, &Some(604800));
         order_ids.push_back(order_id);
     }
     assert_eq!(order_ids.len(), 10);
@@ -337,14 +309,7 @@ fn test_no_storage_limit_with_indexed_pattern() {
     // In the old pattern, this would approach the 64KB limit
     // With indexed storage, each entry is separate and small
     for i in 0..500 {
-        client.create_escrow(
-            &buyer,
-            &seller,
-            &token,
-            &1000,
-            &(i + 1),
-            &Some(604800),
-        );
+        client.create_escrow(&buyer, &seller, &token, &1000, &(i + 1), &Some(604800));
     }
 
     // Verify count

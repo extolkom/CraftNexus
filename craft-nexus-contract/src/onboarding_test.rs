@@ -1341,7 +1341,7 @@ fn test_error_enum_has_specific_variants() {
     // These tests verify that the error enum maintains backward compatibility
     // and includes required error variants for the platform. Uncomment assertions
     // as corresponding error variants are added during development.
-    
+
     // Note: The following variant checks are deferred to a future refactoring
     // when error codes are consolidated across onboarding and escrow contracts:
     // assert_eq!(Error::InvalidIpfsHash as u32, 25);
@@ -1396,7 +1396,11 @@ fn test_set_moderator_unauthorized() {
     let (client, _admin) = setup_test(&env);
 
     let user = Address::generate(&env);
-    client.onboard_user(&user, &soroban_sdk::String::from_str(&env, "target_user"), &UserRole::Buyer);
+    client.onboard_user(
+        &user,
+        &soroban_sdk::String::from_str(&env, "target_user"),
+        &UserRole::Buyer,
+    );
 
     // Clear mocked auths so the next call has no authorization.
     env.set_auths(&[]);
@@ -1415,7 +1419,11 @@ fn test_reactivate_profile_unauthorized() {
     let (client, _admin) = setup_test(&env);
 
     let user = Address::generate(&env);
-    client.onboard_user(&user, &soroban_sdk::String::from_str(&env, "someuser"), &UserRole::Buyer);
+    client.onboard_user(
+        &user,
+        &soroban_sdk::String::from_str(&env, "someuser"),
+        &UserRole::Buyer,
+    );
     client.deactivate_profile(&user);
 
     // Clear all mocked auths — no authorization provided.
@@ -1464,19 +1472,16 @@ fn test_has_active_contracts() {
     token_asset.mint(&user, &10_000_000);
 
     // Onboard seller as artisan
-    client.onboard_user(&seller, &String::from_str(&env, "artisan"), &UserRole::Artisan);
+    client.onboard_user(
+        &seller,
+        &String::from_str(&env, "artisan"),
+        &UserRole::Artisan,
+    );
     // Onboard buyer as buyer
     client.onboard_user(&user, &String::from_str(&env, "buyer"), &UserRole::Buyer);
 
     // Create escrow
-    escrow_client.create_escrow(
-        &user,
-        &seller,
-        &token_id.address(),
-        &1_000_000,
-        &1,
-        &None,
-    );
+    escrow_client.create_escrow(&user, &seller, &token_id.address(), &1_000_000, &1, &None);
 
     // Now has_active_contracts should return true
     assert!(client.has_active_contracts(&user));

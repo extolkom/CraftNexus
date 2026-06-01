@@ -38,7 +38,13 @@ fn setup_enhanced_test(
     onboarding_client.set_escrow_contract(&escrow_id);
 
     // Initialize Escrow with onboarding contract address
-    escrow_client.initialize(&platform_wallet, &admin, &arbitrator, &500, &Some(onboarding_id.clone()));
+    escrow_client.initialize(
+        &platform_wallet,
+        &admin,
+        &arbitrator,
+        &500,
+        &Some(onboarding_id.clone()),
+    );
 
     let buyer = Address::generate(env);
     let artisan = Address::generate(env);
@@ -187,7 +193,10 @@ fn test_reactivate_profile_success() {
     let (_, onboarding, buyer, _, _, _, _, _) = setup_enhanced_test(&env);
 
     onboarding.deactivate_profile(&buyer);
-    assert_eq!(onboarding.get_user(&buyer).status, ProfileStatus::Deactivated);
+    assert_eq!(
+        onboarding.get_user(&buyer).status,
+        ProfileStatus::Deactivated
+    );
     assert!(!onboarding.is_username_taken(&String::from_str(&env, "buyer")));
 
     let profile = onboarding.reactivate_profile(&buyer);

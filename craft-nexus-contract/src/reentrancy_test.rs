@@ -26,7 +26,13 @@ fn test_release_cei_pattern() {
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
     // Initialize contract
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     // Mint tokens to buyer
     token_client.mint(&buyer, &10000);
@@ -43,26 +49,24 @@ fn test_release_cei_pattern() {
     );
 
     // Get escrow before release
-    let escrow_before: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id))
-                .unwrap()
-        });
+    let escrow_before: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id))
+            .unwrap()
+    });
     assert_eq!(escrow_before.status, EscrowStatus::Active);
 
     // Release funds
     client.release_funds(&order_id);
 
     // Verify state was updated (CEI pattern ensures this happens before transfer)
-    let escrow_after: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id))
-                .unwrap()
-        });
+    let escrow_after: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id))
+            .unwrap()
+    });
     assert_eq!(escrow_after.status, EscrowStatus::Released);
 }
 
@@ -85,7 +89,13 @@ fn test_refund_cei_pattern() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &10000);
 
@@ -103,13 +113,12 @@ fn test_refund_cei_pattern() {
     client.refund(&(order_id as u64));
 
     // Verify state was updated before transfer
-    let escrow: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id))
-                .unwrap()
-        });
+    let escrow: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id))
+            .unwrap()
+    });
     assert_eq!(escrow.status, EscrowStatus::Refunded);
 }
 
@@ -133,7 +142,13 @@ fn test_resolve_dispute_cei_pattern() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &arbitrator, &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &arbitrator,
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &10000);
 
@@ -154,13 +169,12 @@ fn test_resolve_dispute_cei_pattern() {
     client.resolve_dispute(&order_id, &Resolution::ReleaseToSeller, &arbitrator);
 
     // Verify state was updated before transfers
-    let escrow: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id))
-                .unwrap()
-        });
+    let escrow: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id))
+            .unwrap()
+    });
     assert_eq!(escrow.status, EscrowStatus::Resolved);
 }
 
@@ -183,7 +197,13 @@ fn test_resolve_expired_dispute_cei_pattern() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &10000);
 
@@ -209,13 +229,12 @@ fn test_resolve_expired_dispute_cei_pattern() {
     client.resolve_expired_dispute(&order_id);
 
     // Verify state was updated before transfer
-    let escrow: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id))
-                .unwrap()
-        });
+    let escrow: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id))
+            .unwrap()
+    });
     assert_eq!(escrow.status, EscrowStatus::Resolved);
 }
 
@@ -238,7 +257,13 @@ fn test_accept_partial_refund_cei_pattern() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &10000);
 
@@ -262,13 +287,12 @@ fn test_accept_partial_refund_cei_pattern() {
     let _ = client.try_accept_partial_refund(&order_id);
 
     // Verify state was updated before transfers
-    let escrow: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id))
-                .unwrap()
-        });
+    let escrow: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id))
+            .unwrap()
+    });
     assert_eq!(escrow.status, EscrowStatus::Resolved);
 }
 
@@ -291,32 +315,31 @@ fn test_cancel_recurring_escrow_cei_pattern() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &20000);
 
     // Create recurring escrow
-    let escrow_obj = client.create_recurring_escrow(
-        &buyer,
-        &artisan,
-        &token.address(),
-        &10000,
-        &1000,
-        &86400,
-    );
+    let escrow_obj =
+        client.create_recurring_escrow(&buyer, &artisan, &token.address(), &10000, &1000, &86400);
     let id = escrow_obj.id;
 
     // Cancel recurring escrow
     client.cancel_recurring_escrow(&id);
 
     // Verify state was updated before transfer
-    let escrow: RecurringEscrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&DataKey::RecurringEscrow(id))
-                .unwrap()
-        });
+    let escrow: RecurringEscrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecurringEscrow(id))
+            .unwrap()
+    });
     assert_eq!(escrow.is_active, false);
 }
 
@@ -339,7 +362,13 @@ fn test_auto_release_cei_pattern() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &10000);
 
@@ -362,13 +391,12 @@ fn test_auto_release_cei_pattern() {
     client.auto_release(&order_id);
 
     // Verify state was updated before transfer
-    let escrow: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id))
-                .unwrap()
-        });
+    let escrow: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id))
+            .unwrap()
+    });
     assert_eq!(escrow.status, EscrowStatus::Released);
 }
 
@@ -391,7 +419,13 @@ fn test_state_consistency_during_concurrent_operations() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &30000);
 
@@ -433,31 +467,28 @@ fn test_state_consistency_during_concurrent_operations() {
     client.refund(&(order_id2 as u64));
 
     // Verify all escrows have correct independent states
-    let escrow1: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id1))
-                .unwrap()
-        });
+    let escrow1: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id1))
+            .unwrap()
+    });
     assert_eq!(escrow1.status, EscrowStatus::Released);
 
-    let escrow2: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id2))
-                .unwrap()
-        });
+    let escrow2: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id2))
+            .unwrap()
+    });
     assert_eq!(escrow2.status, EscrowStatus::Refunded);
 
-    let escrow3: Escrow = env
-        .as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .get(&(Symbol::new(&env, "ESCROW"), order_id3))
-                .unwrap()
-        });
+    let escrow3: Escrow = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get(&(Symbol::new(&env, "ESCROW"), order_id3))
+            .unwrap()
+    });
     assert_eq!(escrow3.status, EscrowStatus::Active);
 }
 
@@ -480,7 +511,13 @@ fn test_active_obligations_updated_before_transfers() {
     let contract_id = env.register_contract(None, CraftNexusContract);
     let client = CraftNexusContractClient::new(&env, &contract_id);
 
-    client.initialize(&platform_wallet, &admin, &Address::generate(&env), &500, &Some(onboarding_contract));
+    client.initialize(
+        &platform_wallet,
+        &admin,
+        &Address::generate(&env),
+        &500,
+        &Some(onboarding_contract),
+    );
 
     token_client.mint(&buyer, &10000);
 

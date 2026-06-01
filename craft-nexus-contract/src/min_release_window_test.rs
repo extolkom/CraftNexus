@@ -56,7 +56,15 @@ fn setup_test() -> (
         &Some(onboarding_contract),
     );
 
-    (env, client, buyer, seller, token_addr, admin, platform_wallet)
+    (
+        env,
+        client,
+        buyer,
+        seller,
+        token_addr,
+        admin,
+        platform_wallet,
+    )
 }
 
 #[test]
@@ -72,14 +80,7 @@ fn test_create_escrow_with_minimum_window() {
     let (_, client, buyer, seller, token_addr, _, _) = setup_test();
 
     // Create escrow with exactly the minimum window (1 day)
-    let escrow = client.create_escrow(
-        &buyer,
-        &seller,
-        &token_addr,
-        &1_000_000,
-        &1,
-        &Some(ONE_DAY),
-    );
+    let escrow = client.create_escrow(&buyer, &seller, &token_addr, &1_000_000, &1, &Some(ONE_DAY));
 
     assert_eq!(escrow.release_window, ONE_DAY);
 }
@@ -123,14 +124,7 @@ fn test_create_escrow_with_one_second_fails() {
     let (_, client, buyer, seller, token_addr, _, _) = setup_test();
 
     // Try to create "flash" escrow with 1 second window
-    client.create_escrow(
-        &buyer,
-        &seller,
-        &token_addr,
-        &1_000_000,
-        &1,
-        &Some(1),
-    );
+    client.create_escrow(&buyer, &seller, &token_addr, &1_000_000, &1, &Some(1));
 }
 
 #[test]
@@ -139,14 +133,7 @@ fn test_create_escrow_with_zero_window_fails() {
     let (_, client, buyer, seller, token_addr, _, _) = setup_test();
 
     // Try to create escrow with 0 second window
-    client.create_escrow(
-        &buyer,
-        &seller,
-        &token_addr,
-        &1_000_000,
-        &1,
-        &Some(0),
-    );
+    client.create_escrow(&buyer, &seller, &token_addr, &1_000_000, &1, &Some(0));
 }
 
 #[test]
@@ -313,13 +300,7 @@ fn test_multiple_escrows_with_different_windows() {
     client.set_min_release_window(&ONE_HOUR);
 
     // Create escrows with various valid windows
-    let windows = [
-        ONE_HOUR,
-        2 * ONE_HOUR,
-        ONE_DAY,
-        3 * ONE_DAY,
-        SEVEN_DAYS,
-    ];
+    let windows = [ONE_HOUR, 2 * ONE_HOUR, ONE_DAY, 3 * ONE_DAY, SEVEN_DAYS];
 
     for (i, window) in windows.iter().enumerate() {
         let escrow = client.create_escrow(
@@ -386,14 +367,7 @@ fn test_batch_create_with_minimum_window() {
     let (env, client, buyer, seller, token_addr, admin, _) = setup_test();
 
     // Create escrow with 1 hour window (default minimum is 1 day)
-    let escrow = client.create_escrow(
-        &buyer,
-        &seller,
-        &token_addr,
-        &1_000_000,
-        &1,
-        &Some(ONE_DAY),
-    );
+    let escrow = client.create_escrow(&buyer, &seller, &token_addr, &1_000_000, &1, &Some(ONE_DAY));
     assert_eq!(escrow.release_window, ONE_DAY);
 }
 
@@ -403,12 +377,12 @@ fn test_reasonable_minimum_windows() {
 
     // Test various reasonable minimum windows
     let reasonable_minimums = [
-        ONE_HOUR,           // 1 hour
-        6 * ONE_HOUR,       // 6 hours
-        12 * ONE_HOUR,      // 12 hours
-        ONE_DAY,            // 1 day
-        2 * ONE_DAY,        // 2 days
-        7 * ONE_DAY,        // 1 week
+        ONE_HOUR,      // 1 hour
+        6 * ONE_HOUR,  // 6 hours
+        12 * ONE_HOUR, // 12 hours
+        ONE_DAY,       // 1 day
+        2 * ONE_DAY,   // 2 days
+        7 * ONE_DAY,   // 1 week
     ];
 
     for min_window in reasonable_minimums {
@@ -436,14 +410,7 @@ fn test_min_window_prevents_immediate_auto_release() {
     let token = token::Client::new(&env, &token_addr);
 
     // Create escrow with minimum window (1 day)
-    client.create_escrow(
-        &buyer,
-        &seller,
-        &token_addr,
-        &1_000_000,
-        &1,
-        &Some(ONE_DAY),
-    );
+    client.create_escrow(&buyer, &seller, &token_addr, &1_000_000, &1, &Some(ONE_DAY));
 
     // Fast forward past the window
     env.ledger().with_mut(|li| {
