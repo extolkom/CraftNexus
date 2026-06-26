@@ -441,6 +441,35 @@ fn normalize_username(env: &Env, username: &String) -> String {
     String::from_bytes(env, &normalized[..out_len])
 }
 
+/// Transliterate the leading multi-byte character of a username to its ASCII
+/// equivalent (component #48 — username normalization interface).
+///
+/// This is the lookup table that drives [`normalize_username`]: it maps the
+/// first UTF-8 character of `input` (accented Latin letters, Greek, and
+/// Cyrillic look-alikes, plus zero-width/BOM separators) to a stable ASCII
+/// byte sequence so that visually-similar usernames collapse to one canonical
+/// form. Canonicalization is what makes the `DataKey::Username` index a true
+/// uniqueness constraint and blocks homoglyph squatting (e.g. Cyrillic "о" vs
+/// Latin "o").
+///
+/// # Off-chain integration
+///
+/// Clients and indexers that need to predict the on-chain canonical username
+/// (for example, to check availability before submitting `onboard_user`) must
+/// reproduce this exact mapping. The mapping is intentionally append-only:
+/// existing entries are never repointed, so a username that normalized a given
+/// way on registration continues to resolve identically across upgrades.
+///
+/// # Parameters
+/// - `input`: the remaining username bytes, positioned at the start of a UTF-8
+///   character. Only the leading byte(s) are inspected.
+///
+/// # Returns
+/// - `Some((ascii, consumed))` — `ascii` is the replacement byte slice to emit
+///   and `consumed` is the number of input bytes the matched character
+///   occupied (so the caller can advance its cursor).
+/// - `None` — the leading character has no transliteration rule; the caller
+///   handles it with its default lowercasing/separator logic.
 fn map_username_bytes(input: &[u8]) -> Option<(&'static [u8], usize)> {
     match input {
         [0xC3, 0x84, ..]
@@ -521,6 +550,27 @@ fn map_username_bytes(input: &[u8]) -> Option<(&'static [u8], usize)> {
     }
 }
 
+/// Return the length, in bytes, of the UTF-8 character that begins with
+/// `first_byte` (component #48 — username normalization interface).
+///
+/// Used by [`normalize_username`] and [`map_username_bytes`] to advance the
+/// byte cursor one full character at a time when scanning a username, since
+/// `no_std` Soroban strings are processed as raw byte buffers rather than as
+/// `char` iterators. The length is derived purely from the leading byte's
+/// high bits per the UTF-8 encoding:
+///
+/// - `0x00..=0x7F` → 1 byte (ASCII)
+/// - `0xC0..=0xDF` → 2 bytes
+/// - `0xE0..=0xEF` → 3 bytes
+/// - `0xF0..=0xF7` → 4 bytes
+///
+/// # Parameters
+/// - `first_byte`: the first byte of a UTF-8 character.
+///
+/// # Returns
+/// The byte length of the character (1–4). Continuation bytes and any invalid
+/// leading byte fall back to `1` so the scanner always makes forward progress
+/// and never loops on malformed input.
 fn utf8_char_len(first_byte: u8) -> usize {
     match first_byte {
         0x00..=0x7F => 1,
