@@ -6,9 +6,12 @@
 #![allow(unexpected_cfgs)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, Env, Map, String, Symbol,
+    contract, contracterror, contractimpl, contracttype, token, Address, Bytes, Env, Map, String, Symbol,
     TryFromVal, Val, Vec,
 };
+
+extern crate alloc;
+use alloc::string::ToString;
 
 /// Standard TTL threshold for persistent storage (approx 14 hours at 5s ledger)
 const TTL_THRESHOLD: u32 = 10_000;
@@ -837,19 +840,17 @@ impl OnboardingContract {
     /// This prevents reentrancy where malicious callers trigger intermediate states
     /// via callbacks on arbitrary token contracts before final balance settlement.
     fn parse_verification_action(env: &Env, action: &Symbol) -> VerificationActionCode {
-        if action == &String::from_str(env, "requested") {
+        if action == &Symbol::new(env, "requested") {
             VerificationActionCode::Requested
-        } else if action == &String::from_str(env, "approved") {
+        } else if action == &Symbol::new(env, "approved") {
             VerificationActionCode::Approved
-        } else if action == &String::from_str(env, "rejected") {
+        } else if action == &Symbol::new(env, "rejected") {
             VerificationActionCode::Rejected
-        } else if action == &String::from_str(env, "auto_verified") {
+        } else if action == &Symbol::new(env, "auto_verified") {
             VerificationActionCode::AutoVerified
         } else {
             VerificationActionCode::UsernameChangedRevoked
         }
-
-        action.clone()
     }
 
     fn migrate_legacy_verification_history(env: &Env, user: &Address) {
@@ -1012,12 +1013,6 @@ impl OnboardingContract {
         let legacy =
             LegacyUserProfile::try_from_val(env, &stored).expect("User profile storage corrupted");
         
-        let username_str = legacy.username;
-        let username_len = core::cmp::min(username_str.len(), 32) as usize;
-        let mut user_buf = [0u8; 32];
-        username_str.copy_into_slice(&mut user_buf[..username_len]);
-        let optimized_username = Symbol::from_bytes(env, &user_buf[..username_len]);
-        
         // Migrate Option<String> to Option<Bytes>
         let optimized_cid = legacy.portfolio_cid.map(|cid_str| {
             let mut cid_bytes = Bytes::new(env);
@@ -1028,7 +1023,7 @@ impl OnboardingContract {
             cid_bytes
         });
 
-            let upgraded = UserProfile {
+        let upgraded = UserProfile {
             version: CURRENT_USER_PROFILE_VERSION,
             address: legacy.address.clone(),
             role: legacy.role,
@@ -1037,7 +1032,7 @@ impl OnboardingContract {
             is_verified: legacy.is_verified,
             successful_trades: legacy.successful_trades,
             disputed_trades: legacy.disputed_trades,
-            portfolio_cid: legacy.portfolio_cid,
+            portfolio_cid: optimized_cid,
             status: ProfileStatus::Active,
         };
         env.storage().persistent().set(&key, &upgraded);
@@ -1241,20 +1236,14 @@ impl OnboardingContract {
         Self::extend_persistent(&env, &DataKey::Config);
 
         let admin_username = String::from_str(&env, "admin");
-        // let normalized = normalize_username(&env, &admin_username);
-
-        let mut buf = [0u8; 32];
-        let len = profile.username.to_bytes().len() as usize;
-        profile.username.to_bytes().copy_into_slice(&mut buf[..len]);
-        let string_conversion = String::from_bytes(&env, &buf[..len]);
-        let normalized = normalize_username(&env, &string_conversion);
+        let normalized = normalize_username(&env, &admin_username);
 
         // Store admin as initial admin role
         let admin_profile = UserProfile {
             version: CURRENT_USER_PROFILE_VERSION,
             address: admin.clone(),
             role: UserRole::Admin,
-            username: Symbol::new(&env, &normalized.to_string()),
+            username: Symbol::new(&env, "admin"),
             registered_at: env.ledger().timestamp(),
             is_verified: true,
             successful_trades: 0,
@@ -1365,12 +1354,17 @@ impl OnboardingContract {
         let normalized = normalize_username(&env, &username);
         
         // Convert to Symbol for optimized storage
-        let username_len = core::cmp::min(normalized.len(), 32) as usize;
+        let username_len = core::cmp::min(normalized.len() as usize, 32);
         let mut user_buf = [0u8; 32];
         normalized.copy_into_slice(&mut user_buf[..username_len]);
-        let optimized_username = Symbol::from_bytes(&env, &user_buf[..username_len]);
+        let rust_str = core::str::from_utf8(&user_buf[..username_len]).unwrap();
+        let optimized_username = Symbol::new(&env, rust_str);
         assert!(
-            username_len <= config.max_username_length,
+            username_len >= config.min_username_length as usize,
+            "Username too short"
+        );
+        assert!(
+            username_len <= config.max_username_length as usize,
             "Username too long"
         );
 
@@ -1423,7 +1417,7 @@ impl OnboardingContract {
             version: CURRENT_USER_PROFILE_VERSION,
             address: user.clone(),
             role,
-            username: Symbol::new(&env, &normalized.to_string()),           
+            username: optimized_username,           
             registered_at: env.ledger().timestamp(),
             is_verified: false,
             successful_trades: 0,
@@ -1829,7 +1823,8 @@ impl OnboardingContract {
             env.panic_with_error(Error::ProfileDeactivated);
         }
 
-        let normalized = normalize_username(&env, &profile.username);
+        let username_string = String::from_str(&env, profile.username.to_string().as_ref());
+        let normalized = normalize_username(&env, &username_string);
         if normalized == String::from_str(&env, "admin") {
             env.panic_with_error(Error::Unauthorized);
         }
@@ -1934,7 +1929,8 @@ impl OnboardingContract {
         }
 
         // Re-claim username — fail if another user took it while deactivated
-        let normalized = normalize_username(&env, &profile.username);
+        let username_string = String::from_str(&env, profile.username.to_string().as_ref());
+        let normalized = normalize_username(&env, &username_string);
         if env
             .storage()
             .persistent()
@@ -2474,7 +2470,7 @@ impl OnboardingContract {
                 .unwrap_or(Vec::new(env));
             history.push_back(VerificationEntry {
                 timestamp: env.ledger().timestamp(),
-                action: String::from_str(env, "auto_verified"),
+                action: Symbol::new(env, "auto_verified"),
                 by: None,
             });
             if history.len() > 10 {
@@ -2978,18 +2974,9 @@ impl OnboardingContract {
             "Username already taken"
         );
 
-        Self::collect_username_change_fee(&env, &user, &config);
-
         // Atomically remove old username mapping and add new one
         let old_username = profile.username.clone();
-        // env.storage()
-        //     .persistent()
-        //     .remove(&DataKey::Username(old_username));
-
-        let mut buf = [0u8; 32];
-        let len = old_username.to_bytes().len() as usize;
-        old_username.to_bytes().copy_into_slice(&mut buf[..len]);
-        let old_string = String::from_bytes(&env, &buf[..len]);
+        let old_string = String::from_str(&env, old_username.to_string().as_ref());
         env.storage().persistent().remove(&DataKey::Username(old_string));
 
         // Store new username → address mapping
@@ -2999,7 +2986,12 @@ impl OnboardingContract {
         Self::extend_persistent(&env, &DataKey::Username(normalized_new.clone()));
 
         // Update profile with new username
-        profile.username = normalized_new;
+        let new_username_len = core::cmp::min(normalized_new.len() as usize, 32);
+        let mut user_buf = [0u8; 32];
+        normalized_new.copy_into_slice(&mut user_buf[..new_username_len]);
+        let rust_str = core::str::from_utf8(&user_buf[..new_username_len]).unwrap();
+        let optimized_new_username = Symbol::new(&env, rust_str);
+        profile.username = optimized_new_username;
         profile.is_verified = false;
 
         // Store updated profile
@@ -3034,6 +3026,9 @@ impl OnboardingContract {
         // Emit event
         env.events()
             .publish((Symbol::new(&env, "UsernameChanged"),), &user);
+
+        // Interaction (CEI pattern: external transfer is the last step)
+        Self::collect_username_change_fee(&env, &user, &config);
 
         profile
     }

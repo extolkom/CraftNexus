@@ -7,9 +7,6 @@ edition = "2021"
 crate-type = ["cdylib"]
 name = "craft_nexus_contract"
 
-[features]
-testutils = []
-
 [dependencies]
 soroban-sdk = { version = "21.0.0" }
 darling = "0.20.11"

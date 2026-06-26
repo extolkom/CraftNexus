@@ -6,7 +6,7 @@
 //     BytesN, Env, IntoVal, Map, String, Symbol, TryFromVal, Val, Vec,
 // };
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, Bytes, Env, Map, String, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Bytes, BytesN, Env, IntoVal, Map, String, Symbol,
     TryFromVal, Val, Vec,
 };
 
@@ -889,6 +889,10 @@ pub trait OnboardingInterface {
     /// `delta` should be `+1` when an escrow becomes active and `-1` when the
     /// escrow closes. The onboarding contract rejects underflows.
     fn update_active_contracts(env: Env, user: Address, delta: i32);
+    /// Refresh the persistent TTL for a user's profile entry.
+    fn bump_user_profile_ttl(env: Env, user: Address) -> bool;
+    /// Refresh the persistent TTL for a user's activity metrics entry.
+    fn bump_user_metrics_ttl(env: Env, user: Address) -> bool;
 }
 
 #[contract]
@@ -2890,7 +2894,8 @@ impl CraftNexusContract {
             let slice_len = core::cmp::min(len, 32);
             let mut buf = [0u8; 32];
             r.copy_into_slice(&mut buf[..slice_len]);
-            Symbol::from_bytes(env, &buf[..slice_len])
+            let rust_str = core::str::from_utf8(&buf[..slice_len]).unwrap();
+            Symbol::new(env, rust_str)
         });
 
         let upgraded = Escrow {
@@ -2931,7 +2936,7 @@ impl CraftNexusContract {
                 Escrow::try_from_val(env, &stored).expect("")
             } else {
                 let previous = EscrowWithoutBatch::try_from_val(env, &stored).expect("");
-                Self::escrow_from_without_batch(previous)
+                Self::escrow_from_without_batch(env, previous)
             };
             if escrow.version < CURRENT_ESCROW_VERSION {
                 return Self::upgrade_escrow(env, order_id, escrow);
@@ -2941,6 +2946,14 @@ impl CraftNexusContract {
         }
 
         let legacy = LegacyEscrow::try_from_val(env, &stored).expect("");
+        let dispute_symbol = legacy.dispute_reason.map(|r| {
+            let len = r.len() as usize;
+            let slice_len = core::cmp::min(len, 32);
+            let mut buf = [0u8; 32];
+            r.copy_into_slice(&mut buf[..slice_len]);
+            let rust_str = core::str::from_utf8(&buf[..slice_len]).unwrap();
+            Symbol::new(env, rust_str)
+        });
         let upgraded = Escrow {
             version: CURRENT_ESCROW_VERSION,
             id: legacy.id,
@@ -2954,7 +2967,7 @@ impl CraftNexusContract {
             created_at: legacy.created_at,
             ipfs_hash: legacy.ipfs_hash,
             metadata_hash: legacy.metadata_hash,
-            dispute_reason: legacy.dispute_reason,
+            dispute_reason: dispute_symbol,
             dispute_initiated_at: legacy.dispute_initiated_at,
             funded: true,
         };
@@ -2980,7 +2993,8 @@ impl CraftNexusContract {
             let slice_len = core::cmp::min(len, 32);
             let mut buf = [0u8; 32];
             r.copy_into_slice(&mut buf[..slice_len]);
-            Symbol::from_bytes(env, &buf[..slice_len])
+            let rust_str = core::str::from_utf8(&buf[..slice_len]).unwrap();
+            Symbol::new(env, rust_str)
         });
 
         Escrow {
