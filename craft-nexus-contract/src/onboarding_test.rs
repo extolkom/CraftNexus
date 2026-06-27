@@ -1,5 +1,4 @@
 use super::*;
-use crate::Error;
 use soroban_sdk::{testutils::Address as _, token, Address, Env, String};
 
 fn setup_test(env: &Env) -> (OnboardingContractClient<'static>, Address) {
@@ -10,6 +9,15 @@ fn setup_test(env: &Env) -> (OnboardingContractClient<'static>, Address) {
     client.initialize(&admin);
 
     (client, admin)
+}
+
+fn to_bytes(env: &Env, s: &String) -> Bytes {
+    let mut bytes = Bytes::new(env);
+    let len = s.len() as usize;
+    let mut buf = [0u8; 128];
+    s.copy_into_slice(&mut buf[..len]);
+    bytes.extend_from_slice(&buf[..len]);
+    bytes
 }
 
 // ===== Initialization =====
@@ -60,7 +68,7 @@ fn test_onboard_user_as_buyer() {
 
     assert_eq!(profile.version, CURRENT_USER_PROFILE_VERSION);
     assert_eq!(profile.address, user);
-    assert_eq!(profile.username, String::from_str(&env, "john_doe"));
+    assert_eq!(profile.username, Symbol::new(&env, "john_doe"));
     assert_eq!(profile.role, UserRole::Buyer);
     assert!(!profile.is_verified);
 }
@@ -78,7 +86,7 @@ fn test_onboard_user_as_artisan() {
     let profile = client.onboard_user(&user, &username, &UserRole::Artisan);
 
     assert_eq!(profile.address, user);
-    assert_eq!(profile.username, String::from_str(&env, "artisan_jane"));
+    assert_eq!(profile.username, Symbol::new(&env, "artisan_jane"));
     assert_eq!(profile.role, UserRole::Artisan);
 }
 
@@ -95,7 +103,7 @@ fn test_onboard_stores_normalized_username() {
     let profile = client.onboard_user(&user, &username, &UserRole::Buyer);
 
     // Username should be stored as lowercase
-    assert_eq!(profile.username, String::from_str(&env, "johndoe"));
+    assert_eq!(profile.username, Symbol::new(&env, "johndoe"));
 }
 
 #[test]
@@ -110,7 +118,7 @@ fn test_onboard_normalizes_multilingual_username() {
 
     let profile = client.onboard_user(&user, &username, &UserRole::Buyer);
 
-    assert_eq!(profile.username, String::from_str(&env, "john_one"));
+    assert_eq!(profile.username, Symbol::new(&env, "john_one"));
     assert!(client.is_username_taken(&String::from_str(&env, "JOHN ONE")));
 }
 
@@ -248,7 +256,7 @@ fn test_get_user_by_username() {
 
     let profile = client.get_user_by_username(&username);
     assert_eq!(profile.address, user);
-    assert_eq!(profile.username, String::from_str(&env, "craft_user"));
+    assert_eq!(profile.username, Symbol::new(&env, "craft_user"));
 }
 
 #[test]
@@ -321,7 +329,7 @@ fn test_get_user() {
     client.onboard_user(&user, &username, &UserRole::Buyer);
 
     let profile = client.get_user(&user);
-    assert_eq!(profile.username, String::from_str(&env, "test_user"));
+    assert_eq!(profile.username, Symbol::new(&env, "test_user"));
 }
 
 #[test]
@@ -736,6 +744,100 @@ fn test_process_verification_request_preserves_other_pending_users() {
     assert_eq!(queue.get(0), Some(user_two));
 }
 
+// ============================================================
+// Issue #41 – admin_clear_verification_request authorization
+// ============================================================
+
+/// Admin can force-clear a pending verification request, advancing the queue.
+#[test]
+fn test_admin_clear_verification_request_authorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin) = setup_test(&env);
+    let user = Address::generate(&env);
+    client.onboard_user(
+        &user,
+        &String::from_str(&env, "stale_req"),
+        &UserRole::Artisan,
+    );
+
+    client.request_verification(&user);
+    assert!(client.is_verification_pending(&user));
+
+    let was_pending = client.admin_clear_verification_request(&user);
+    assert!(was_pending);
+
+    // Request is gone and the queue has been compacted.
+    assert!(!client.is_verification_pending(&user));
+    assert_eq!(client.get_verification_queue().len(), 0);
+
+    // The admin's authorization was the one that gated the call.
+    let auths = env.auths();
+    assert!(auths.iter().any(|(addr, _)| addr == &admin));
+}
+
+/// Clearing a user with no pending request is an idempotent no-op returning false.
+#[test]
+fn test_admin_clear_verification_request_no_pending() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin) = setup_test(&env);
+    let user = Address::generate(&env);
+    client.onboard_user(
+        &user,
+        &String::from_str(&env, "no_req"),
+        &UserRole::Artisan,
+    );
+
+    let was_pending = client.admin_clear_verification_request(&user);
+    assert!(!was_pending);
+}
+
+/// Unauthorized callers cannot clear another user's verification request:
+/// without the admin signature the require_auth() check rolls the call back.
+#[test]
+#[should_panic]
+fn test_admin_clear_verification_request_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin) = setup_test(&env);
+    let user = Address::generate(&env);
+    client.onboard_user(
+        &user,
+        &String::from_str(&env, "victim"),
+        &UserRole::Artisan,
+    );
+    client.request_verification(&user);
+
+    // Drop all mocked authorizations so the admin's require_auth() fails.
+    env.set_auths(&[]);
+    client.admin_clear_verification_request(&user);
+}
+
+/// A cleared request must not have flipped the user's verification status —
+/// force-clear is a queue-hygiene operation, not an approval.
+#[test]
+fn test_admin_clear_verification_request_does_not_verify() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin) = setup_test(&env);
+    let user = Address::generate(&env);
+    client.onboard_user(
+        &user,
+        &String::from_str(&env, "unverified"),
+        &UserRole::Artisan,
+    );
+
+    client.request_verification(&user);
+    client.admin_clear_verification_request(&user);
+
+    assert!(!client.is_verified(&user));
+}
+
 /// Verification history is tracked across request, approve, and auto-verify actions.
 #[test]
 fn test_verification_history_tracking() {
@@ -820,7 +922,7 @@ fn test_get_user_migrates_legacy_profile() {
     let legacy = LegacyUserProfile {
         address: user.clone(),
         role: UserRole::Buyer,
-        username: String::from_str(&env, "legacy_user"),
+        username: Symbol::new(&env, "legacy_user"),
         registered_at: 1234,
         is_verified: false,
         successful_trades: 0,
@@ -836,7 +938,7 @@ fn test_get_user_migrates_legacy_profile() {
 
     let migrated = client.get_user(&user);
     assert_eq!(migrated.version, CURRENT_USER_PROFILE_VERSION);
-    assert_eq!(migrated.username, String::from_str(&env, "legacy_user"));
+    assert_eq!(migrated.username, Symbol::new(&env, "legacy_user"));
 
     let stored: UserProfile = env.as_contract(&client.address, || {
         env.storage()
@@ -867,7 +969,7 @@ fn test_change_username_success() {
     let new_username = String::from_str(&env, "new_user");
     let updated_profile = client.change_username(&user, &new_username);
 
-    assert_eq!(updated_profile.username, String::from_str(&env, "new_user"));
+    assert_eq!(updated_profile.username, Symbol::new(&env, "new_user"));
     assert_eq!(updated_profile.address, user);
 
     // Verify old username is no longer taken
@@ -916,7 +1018,7 @@ fn test_change_username_case_insensitive() {
     let updated = client.change_username(&user, &new_username);
 
     // Should be normalized to lowercase
-    assert_eq!(updated.username, String::from_str(&env, "newuser"));
+    assert_eq!(updated.username, Symbol::new(&env, "newuser"));
 }
 
 #[test]
@@ -1076,10 +1178,7 @@ fn test_change_username_with_special_characters() {
     let updated = client.change_username(&user, &new_username);
 
     // Should be normalized with underscores
-    assert_eq!(
-        updated.username,
-        String::from_str(&env, "new_user_name_123")
-    );
+    assert_eq!(updated.username, Symbol::new(&env, "new_user_name_123"));
 }
 
 #[test]
@@ -1141,7 +1240,7 @@ fn test_bump_user_profile_ttl_unauthorized() {
             version: CURRENT_USER_PROFILE_VERSION,
             address: user.clone(),
             role: UserRole::Buyer,
-            username: String::from_str(&env, "someone"),
+            username: Symbol::new(&env, "someone"),
             registered_at: env.ledger().timestamp(),
             is_verified: false,
             successful_trades: 0,
@@ -1233,7 +1332,7 @@ fn test_update_portfolio_success() {
     let portfolio_cid = String::from_str(&env, "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG");
     let updated = client.update_portfolio(&user, &Some(portfolio_cid.clone()));
 
-    assert_eq!(updated.portfolio_cid, Some(portfolio_cid));
+    assert_eq!(updated.portfolio_cid, Some(to_bytes(&env, &portfolio_cid)));
     assert_eq!(updated.role, UserRole::Artisan);
 }
 
@@ -1256,7 +1355,7 @@ fn test_update_portfolio_with_cidv1() {
     );
     let updated = client.update_portfolio(&user, &Some(portfolio_cid.clone()));
 
-    assert_eq!(updated.portfolio_cid, Some(portfolio_cid));
+    assert_eq!(updated.portfolio_cid, Some(to_bytes(&env, &portfolio_cid)));
 }
 
 #[test]
@@ -1348,7 +1447,7 @@ fn test_portfolio_accessible_via_get_user() {
 
     // Verify portfolio is accessible via get_user
     let profile = client.get_user(&user);
-    assert_eq!(profile.portfolio_cid, Some(portfolio_cid));
+    assert_eq!(profile.portfolio_cid, Some(to_bytes(&env, &portfolio_cid)));
 }
 
 #[test]
@@ -1369,7 +1468,7 @@ fn test_portfolio_accessible_via_get_user_by_username() {
 
     // Verify portfolio is accessible via get_user_by_username
     let profile = client.get_user_by_username(&username);
-    assert_eq!(profile.portfolio_cid, Some(portfolio_cid));
+    assert_eq!(profile.portfolio_cid, Some(to_bytes(&env, &portfolio_cid)));
 }
 
 #[test]
@@ -1582,12 +1681,70 @@ fn test_update_active_contracts_tracks_state() {
     client.set_escrow_contract(&escrow_id);
 
     client.update_active_contracts(&user, &1);
-    assert!(client.has_active_contracts(&user));
-
     let auths = env.auths();
     assert!(auths.iter().any(|(addr, _)| addr == &escrow_id));
+    assert!(client.has_active_contracts(&user));
 
     client.update_active_contracts(&user, &-1);
+    assert!(!client.has_active_contracts(&user));
+}
+
+// ============================================================
+// Feature #47 – precise active-contract count for escrow/reputation flows
+// ============================================================
+
+/// get_active_contract_count returns 0 for a user with no tracked contracts.
+#[test]
+fn test_get_active_contract_count_defaults_to_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin) = setup_test(&env);
+    let user = Address::generate(&env);
+    client.onboard_user(&user, &String::from_str(&env, "counter0"), &UserRole::Buyer);
+
+    assert_eq!(client.get_active_contract_count(&user), 0);
+    assert!(!client.has_active_contracts(&user));
+}
+
+/// get_active_contract_count reflects each increment/decrement state transition
+/// and stays consistent with the has_active_contracts boolean.
+#[test]
+fn test_get_active_contract_count_tracks_transitions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin) = setup_test(&env);
+    let user = Address::generate(&env);
+    client.onboard_user(&user, &String::from_str(&env, "counterN"), &UserRole::Buyer);
+
+    let escrow_id = env.register_contract(None, crate::CraftNexusContract);
+    let platform_wallet = Address::generate(&env);
+    let arbitrator = Address::generate(&env);
+    let escrow_client = crate::CraftNexusContractClient::new(&env, &escrow_id);
+    escrow_client.initialize(
+        &platform_wallet,
+        &admin,
+        &arbitrator,
+        &500,
+        &Some(client.address.clone()),
+    );
+    client.set_escrow_contract(&escrow_id);
+
+    // 0 -> 2: two concurrent active contracts.
+    client.update_active_contracts(&user, &1);
+    client.update_active_contracts(&user, &1);
+    assert_eq!(client.get_active_contract_count(&user), 2);
+    assert!(client.has_active_contracts(&user));
+
+    // 2 -> 1: one closes.
+    client.update_active_contracts(&user, &-1);
+    assert_eq!(client.get_active_contract_count(&user), 1);
+    assert!(client.has_active_contracts(&user));
+
+    // 1 -> 0: last one closes, entry is removed and count reads back as zero.
+    client.update_active_contracts(&user, &-1);
+    assert_eq!(client.get_active_contract_count(&user), 0);
     assert!(!client.has_active_contracts(&user));
 }
 
@@ -1708,18 +1865,7 @@ fn test_is_verification_pending_unauthorized() {
     client.is_verification_pending(&user);
 }
 
-#[test]
-#[should_panic]
-fn test_bump_user_profile_ttl_unauthorized() {
-    let env = Env::default();
-    env.mock_all_auths();
 
-    let (client, _admin) = setup_test(&env);
-    let user = Address::generate(&env);
-
-    env.set_auths(&[]);
-    client.bump_user_profile_ttl(&user);
-}
 
 // ── Issue #470: [SECURITY] Endpoint #69 – set_moderator ─────────────────────
 
