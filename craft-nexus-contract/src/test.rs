@@ -915,6 +915,59 @@ fn test_claim_admin_no_pending_fails() {
     client.claim_admin();
 }
 
+/// Regression test for issue #631.
+///
+/// The two-step admin transfer actually completes in `claim_admin`, so that is
+/// where the audit trail for the *effective* admin change must be emitted.
+/// `claim_admin` previously captured `_previous_admin` but emitted no event.
+#[test]
+fn test_claim_admin_emits_audit_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _, _, _, admin) = setup_test(&env, true);
+
+    let new_admin = Address::generate(&env);
+    let admin_changed = Symbol::new(&env, "admin_changed");
+
+    // Count "admin_changed" audit events emitted so far.
+    let count_changes = || {
+        env.events()
+            .all()
+            .iter()
+            .filter(|e| {
+                e.1.get(0).and_then(|t| t.try_into_val(&env).ok()) == Some(admin_changed.clone())
+            })
+            .count()
+    };
+
+    // Step 1: propose the transfer (emits the "admin_proposed" change).
+    client.update_admin(&new_admin);
+    assert_eq!(
+        count_changes(),
+        1,
+        "update_admin should emit one admin_changed event"
+    );
+
+    // Step 2: claim completes the transfer and must emit its own audit event (#631).
+    client.claim_admin();
+    assert_eq!(
+        count_changes(),
+        2,
+        "claim_admin must emit an admin_changed audit event for the completed transfer"
+    );
+
+    // The most recent admin_changed event must carry (previous_admin, new_admin).
+    let mut payload: Option<(Address, Address)> = None;
+    for e in env.events().all().iter() {
+        if e.1.get(0).and_then(|t| t.try_into_val(&env).ok()) == Some(admin_changed.clone()) {
+            payload = Some(e.2.try_into_val(&env).unwrap());
+        }
+    }
+    let (prev, next) = payload.expect("admin_changed event must be present");
+    assert_eq!(prev, admin, "previous_admin should be the original admin");
+    assert_eq!(next, new_admin, "new_admin should be the claimed admin");
+}
+
 // ===== Admin address validation tests (#419) =====
 
 #[test]
